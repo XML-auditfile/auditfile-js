@@ -176,7 +176,7 @@ To use a local spec checkout instead: `SPEC_ROOT=../auditfile-spec npm test`.
 | Workflow | What it does |
 | -------- | ------------ |
 | `ci.yml` | Push to main and pull requests: fetch the pinned spec, install, test on Node 20, 22 and 24, pack (dry run), audit dependencies |
-| `release.yml` | Manual, with a version such as `1.0.1`. From `main` the version must be higher than every release; from `release/X.Y` (maintenance of an older line) it must be in line X.Y and higher than the latest release in that line. Then it fetches the pinned spec, tests, packs, creates the tag and GitHub release, and publishes to npm through Trusted Publishing when the `NPM_PUBLISH` variable is `true` (environment `npm`). Dist-tags: `latest` for the highest stable release, `next` for a pre-release, `release-X.Y` for maintenance |
+| `release.yml` | Manual, with a version such as `1.0.1`. From `main` the version must be higher than every release; from `release/X.Y` (maintenance of an older line) it must be in line X.Y and higher than the latest release in that line. Then it fetches the pinned spec, tests, packs, creates the tag and GitHub release, and stages the version on npm through Trusted Publishing when the `NPM_PUBLISH` variable is `true` (environment `npm`). A staged version goes live only after a maintainer approves it with 2FA on npmjs.com (Staged Packages) or with `npm stage approve <stage-id>`. Dist-tags: `latest` for the highest stable release, `next` for a pre-release, `release-X.Y` for maintenance |
 | `dependabot.yml` | Weekly updates of npm packages and GitHub Actions |
 
 ## License

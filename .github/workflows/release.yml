@@ -6,12 +6,14 @@ name: Release
 #   the version must be in line X.Y and higher than the latest release in that line.
 #   Branch release/X.Y off the tag of that line, e.g. git switch -c release/0.1 0.1.0.
 # Checks the version, fetches the auditfile-spec pinned in spec.lock.json, tests, packs (with the embedded spec and
-# the TypeScript declarations), creates the tag and GitHub release, and publishes to npm when the NPM_PUBLISH variable
-# is "true".
+# the TypeScript declarations), creates the tag and GitHub release, and stages the version on npm when the NPM_PUBLISH
+# variable is "true".
 #
-# Publishing uses npm Trusted Publishing: no token is stored. GitHub gives this job an OIDC token, and npm accepts it
-# only for the trusted publisher set on the package (this repository, this workflow file, the environment "npm").
-# npm adds a provenance statement that links the published version to this run and commit.
+# Staged publishing: the workflow can only stage (npm stage publish). The version goes live when a maintainer approves
+# it with 2FA, on npmjs.com (Staged Packages) or with npm stage approve <stage-id>; until then nothing is public.
+# Authentication is npm Trusted Publishing, no token is stored: GitHub gives this job an OIDC token, and npm accepts it
+# only for the trusted publisher on the package (this repository, this workflow file, the environment "npm"), which
+# has "Allow npm publish" unchecked. npm adds a provenance statement that links the version to this run and commit.
 #
 # npm dist-tags: a stable release that becomes the highest is "latest", a pre-release is "next",
 # and a maintenance release of an older line is "release-X.Y", so "latest" never moves back.
@@ -109,14 +111,17 @@ jobs:
             --latest="$LATEST" \
             $prerelease
 
-      # Last, because an npm version cannot be published again, not even after unpublishing.
-      # npm accepts a trusted publisher only for a package that exists. The very first version is therefore published
-      # with a short-lived granular token in the secret NPM_TOKEN; after that, configure the trusted publisher on
-      # npmjs.com and delete the secret. Without the secret, npm uses Trusted Publishing.
-      - name: Publish to npm
+      # Last, because an npm version cannot be used again, not even after it was rejected or unpublished.
+      # "./": without it, npm reads "artifacts/<file>.tgz" as a GitHub repository (user/repo).
+      - name: Stage on npm
         if: vars.NPM_PUBLISH == 'true'
         env:
           DIST_TAG: ${{ steps.version.outputs.dist-tag }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        # "./": without it, npm reads "artifacts/<file>.tgz" as a GitHub repository (user/repo).
-        run: npm publish ./artifacts/*.tgz --tag "$DIST_TAG" --access public --provenance
+        run: |
+          npm stage publish ./artifacts/*.tgz --tag "$DIST_TAG" --access public --provenance
+          {
+            echo "### @xml-auditfile/auditfile $VERSION is staged on npm with dist-tag $DIST_TAG"
+            echo
+            echo "Not public yet: approve it with 2FA on npmjs.com (Staged Packages), or run"
+            echo "npm stage list @xml-auditfile/auditfile and then npm stage approve <stage-id>."
+          } >> "$GITHUB_STEP_SUMMARY"
