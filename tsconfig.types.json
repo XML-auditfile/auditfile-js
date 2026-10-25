@@ -10,6 +10,7 @@
     "target": "es2022",
     "module": "nodenext",
     "moduleResolution": "nodenext",
+    "rootDir": "src",
     "outDir": "types"
   },
   "files": ["src/index.js", "src/memory/memory-sink.js"]
