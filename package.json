@@ -52,13 +52,13 @@
     "spec": "node tools/embed-spec.mjs",
     "types": "tsc -p tsconfig.types.json",
     "pretest": "node tools/embed-spec.mjs",
-    "test": "node --test \"test/**/*.test.js\"",
+    "test": "node --test",
     "prepack": "node tools/embed-spec.mjs && tsc -p tsconfig.types.json"
   },
   "dependencies": {
     "saxes": "6.0.0"
   },
   "devDependencies": {
-    "typescript": "5.9.3"
+    "typescript": "7.0.2"
   }
 }

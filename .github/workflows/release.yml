@@ -55,11 +55,11 @@ jobs:
           "dist-tag=$tag" >> $env:GITHUB_OUTPUT
 
       # Node 24 ships npm 11, which Trusted Publishing needs.
-      - uses: actions/setup-node@v5
+      # No dependency cache: a cache entry can come from another branch, and a release must not depend on it.
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: npm
 
       - name: Fetch auditfile-spec (spec.lock.json)
         id: spec
