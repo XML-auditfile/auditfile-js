@@ -24,6 +24,11 @@ export const ViewOperator = Object.freeze({
     Only: 'only',
     /** The value, negated when `by` is one of the codes. */
     Signed: 'signed',
+    /**
+     * `prefix`-n instead of the value, where n numbers the distinct values of the column in the order they first
+     * occur in its table. Null and empty values stay as they are.
+     */
+    Pseudonym: 'pseudonym',
 });
 
 /**

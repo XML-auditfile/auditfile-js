@@ -16,7 +16,13 @@ export function runView(view, schema, rows, parameters, language) {
     const diagnostics = new DiagnosticCollector(language, MAXIMUM_DIAGNOSTICS);
     const slots = [view.source, ...view.joins.map((j) => j.table)];
 
-    const missing = findMissing(view, schema, slots);
+    // The table each slot reads: a join with alternatives may read a table of another name in this version.
+    const tables = new Map([[view.source, view.source]]);
+    for (const join of view.joins) {
+        tables.set(join.table, [join.table, ...join.alternatives].find((t) => schema.findTable(t) !== null) ?? join.table);
+    }
+
+    const missing = findMissing(view, schema, slots, tables);
     if (missing !== null) {
         diagnostics.add('XAF-Q001', Location.NONE, { view: view.name, standard: schema.versionKey, missing });
         return new ViewResult(view, false, [], diagnostics.items);
@@ -24,12 +30,20 @@ export function runView(view, schema, rows, parameters, language) {
 
     const resolve = (reference) => {
         const [table, column] = split(reference);
-        return new Ref(slots.indexOf(table), schema.table(table).findColumn(column));
+        return new Ref(slots.indexOf(table), schema.table(tables.get(table)).findColumn(column));
+    };
+
+    const columnValues = function* (reference) {
+        const [table, column] = split(reference);
+        const index = schema.table(tables.get(table)).findColumn(column).index;
+        for (const row of rows(tables.get(table))) {
+            yield row.values[index] ?? null;
+        }
     };
 
     const filters = buildFilters(view, parameters, resolve);
-    const columns = view.columns.map((c) => ({ column: c, expression: c.value === null ? null : new Expression(c.value, resolve) }));
-    const joins = buildJoins(view, schema, rows, resolve, diagnostics);
+    const columns = view.columns.map((c) => ({ column: c, expression: c.value === null ? null : new Expression(c.value, resolve, columnValues) }));
+    const joins = buildJoins(view, schema, rows, tables, resolve, diagnostics);
 
     const inputs = [];
     for (const source of rows(view.source)) {
@@ -66,15 +80,15 @@ export function runView(view, schema, rows, parameters, language) {
 }
 
 /** Returns the first table or "table.column" the view needs but the schema lacks, or null. */
-function findMissing(view, schema, slots) {
+function findMissing(view, schema, slots, tables) {
     for (const table of slots) {
-        if (schema.findTable(table) === null) {
+        if (schema.findTable(tables.get(table)) === null) {
             return table;
         }
     }
 
     for (const join of view.joins.filter((j) => j.on.length === 0)) {
-        if (ancestorPath(schema, view.source, join.table) === null) {
+        if (ancestorPath(schema, view.source, tables.get(join.table)) === null) {
             return join.table;
         }
     }
@@ -86,7 +100,7 @@ function findMissing(view, schema, slots) {
     ].filter((r) => typeof r === 'string');
     for (const reference of references) {
         const [table, column] = split(reference);
-        if (!slots.includes(table) || schema.findTable(table)?.findColumn(column) == null) {
+        if (!slots.includes(table) || schema.findTable(tables.get(table))?.findColumn(column) == null) {
             return reference;
         }
     }
@@ -159,9 +173,9 @@ function buildFilters(view, parameters, resolve) {
     return filters;
 }
 
-function buildJoins(view, schema, rows, resolve, diagnostics) {
+function buildJoins(view, schema, rows, tables, resolve, diagnostics) {
     // One index by id over every table between the source and its joined ancestors.
-    const ancestorTables = [...new Set(view.joins.filter((j) => j.on.length === 0).flatMap((j) => ancestorPath(schema, view.source, j.table)))];
+    const ancestorTables = [...new Set(view.joins.filter((j) => j.on.length === 0).flatMap((j) => ancestorPath(schema, view.source, tables.get(j.table))))];
     const byId = new Map();
     for (const table of ancestorTables) {
         for (const row of rows(table)) {
@@ -171,10 +185,11 @@ function buildJoins(view, schema, rows, resolve, diagnostics) {
 
     const joins = [];
     for (const join of view.joins) {
+        const table = tables.get(join.table);
         if (join.on.length === 0) {
             joins.push((input) => {
                 for (let row = byId.get(input[0].parentId); row !== undefined; row = byId.get(row.parentId)) {
-                    if (row.table.name === join.table) {
+                    if (row.table.name === table) {
                         return row;
                     }
                 }
@@ -188,7 +203,7 @@ function buildJoins(view, schema, rows, resolve, diagnostics) {
         const right = join.on.map((c) => resolve(c.right));
         const index = new Map();
         const width = Math.max(...right.map((r) => r.slot)) + 1;
-        for (const row of rows(join.table)) {
+        for (const row of rows(table)) {
             const cells = new Array(width).fill(null);
             cells[right[0].slot] = row;
             const key = keyOf(right, cells);
@@ -361,21 +376,33 @@ class Expression {
     #value;
     #column;
     #by;
+    #pseudonyms = null;
 
-    constructor(value, resolve) {
+    constructor(value, resolve, columnValues) {
         this.#value = value;
         this.#column = resolve(value.column);
         this.#by = value.by === null ? null : resolve(value.by);
+        if (value.operator === ViewOperator.Pseudonym) {
+            // Numbered over the whole table, so a placeholder does not depend on filters or on the view.
+            this.#pseudonyms = new Map();
+            for (const cell of columnValues(value.column)) {
+                this.#pseudonym(cell);
+            }
+        }
     }
 
     get type() {
-        return this.#column.column.type;
+        return this.#pseudonyms === null ? this.#column.column.type : ColumnType.String;
     }
 
     evaluate(input) {
         const cell = this.#column.get(input);
         if (this.#value.operator === ViewOperator.Column || cell === null) {
             return cell;
+        }
+
+        if (this.#pseudonyms !== null) {
+            return this.#pseudonym(cell);
         }
 
         const by = this.#by?.get(input) ?? null;
@@ -385,6 +412,21 @@ class Expression {
         }
 
         return listed ? negate(cell) : cell;
+    }
+
+    #pseudonym(cell) {
+        const text = cell === null ? '' : format(cell);
+        if (text === '') {
+            return cell;
+        }
+
+        let pseudonym = this.#pseudonyms.get(text);
+        if (pseudonym === undefined) {
+            pseudonym = `${this.#value.prefix}-${this.#pseudonyms.size + 1}`;
+            this.#pseudonyms.set(text, pseudonym);
+        }
+
+        return pseudonym;
     }
 }
 

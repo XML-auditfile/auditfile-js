@@ -72,8 +72,13 @@ export class ViewDefinition {
 export class ViewJoin {
     /** @internal */
     constructor(json) {
-        /** Table name. */
+        /** Table name, as the view refers to it. */
         this.table = string(json, 'table');
+        /**
+         * Names of the same table in versions that call it differently: when a version lacks {@link ViewJoin#table},
+         * the first alternative it has is joined.
+         */
+        this.alternatives = Object.freeze(strings(json, 'alternatives'));
         /** Equality conditions; empty means {@link ViewJoin#table} is an ancestor of the source. */
         this.on = Object.freeze(array(json, 'on').map((pair) => {
             if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' || typeof pair[1] !== 'string') {
@@ -132,7 +137,7 @@ export class ViewColumn {
 
 /** How a view column gets its value from an input row. */
 export class ViewValue {
-    constructor(operator, column, by, codes) {
+    constructor(operator, column, by, codes, prefix = null) {
         /** How the value is taken from `column`, one of {@link ViewOperator}. */
         this.operator = operator;
         /** The value column, as "table.column". */
@@ -141,6 +146,8 @@ export class ViewValue {
         this.by = by;
         /** Codes for "only" (in) or "signed" (negative). */
         this.codes = Object.freeze([...codes]);
+        /** Placeholder prefix for "pseudonym", e.g. "REL" for REL-1, REL-2, ... */
+        this.prefix = prefix;
         Object.freeze(this);
     }
 
@@ -152,7 +159,7 @@ export class ViewValue {
 
         if (isObject(json)) {
             return new ViewValue(oneOf(string(json, 'op'), ViewOperator, 'view value operator'), string(json, 'value'), optionalString(json, 'by'),
-                [...strings(json, 'in'), ...strings(json, 'negative')]);
+                [...strings(json, 'in'), ...strings(json, 'negative')], optionalString(json, 'prefix'));
         }
 
         throw new SyntaxError('Embedded JSON: invalid view column value.');

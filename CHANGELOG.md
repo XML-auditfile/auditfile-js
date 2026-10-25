@@ -15,6 +15,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
   split file in another encoding than the first part.
 - Dialect actions, view aggregates and view operators are checked when the definitions are loaded.
 - `DialectAction`, `ViewAggregate` and `ViewOperator` constants.
+- Views: joins with `alternatives` (`ViewJoin.alternatives`) and the `pseudonym` operation (`ViewOperator.Pseudonym`,
+  `ViewValue.prefix`); the views `ledger` and `ledger_pseudonymized`.
 - Streaming reader for XAF and related audit files, ported from auditfile-dotnet with the same API in JavaScript style:
   `Auditfile.read`, `validate`, `scan` and `open`, `AuditfileSource`, `AuditfileVersion`, `AuditfileSchema` with JSON round-trip,
   sinks and `MemorySink`, views (`ViewDefinition.run`, `MemorySink.run`).
