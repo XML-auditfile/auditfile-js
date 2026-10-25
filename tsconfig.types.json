@@ -1,0 +1,16 @@
+{
+  // TypeScript declarations for the package, generated from the JSDoc in src/ (npm run types; also on npm pack).
+  // Only declarations are emitted; the JavaScript in src/ is published as written.
+  "compilerOptions": {
+    "allowJs": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "stripInternal": true,
+    "skipLibCheck": true,
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "outDir": "types"
+  },
+  "files": ["src/index.js", "src/memory/memory-sink.js"]
+}

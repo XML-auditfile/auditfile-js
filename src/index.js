@@ -5,6 +5,7 @@ export { Dialect, DialectCorrection } from './definitions/dialect.js';
 export { ElementDefinition } from './definitions/element-definition.js';
 export { LocalizedText, TextLanguage } from './definitions/localized-text.js';
 export { AuditfileManifest, ColumnType, ManifestColumn, ManifestKey, ManifestReference, ManifestTable } from './definitions/manifest.js';
+export { DialectAction, ViewAggregate, ViewOperator } from './definitions/names.js';
 export { ViewColumn, ViewDefinition, ViewJoin, ViewJoinCondition, ViewParameter, ViewValue } from './definitions/view-definition.js';
 export { compareSeverity, Diagnostic, DiagnosticSeverity } from './diagnostics/diagnostic.js';
 export { AuditfileReport } from './diagnostics/report.js';

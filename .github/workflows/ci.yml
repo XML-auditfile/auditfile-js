@@ -32,5 +32,9 @@ jobs:
       - name: Test
         run: npm test
 
+      # Runs prepack (embedded spec, TypeScript declarations) and lists what would be published.
+      - name: Pack (dry run)
+        run: npm pack --dry-run
+
       - name: Audit dependencies
         run: npm audit --omit=dev --audit-level=moderate

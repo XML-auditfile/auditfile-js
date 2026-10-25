@@ -2,6 +2,7 @@ import { array, isObject, object, objects, optionalString, string, strings } fro
 import { runView } from '../views/view-runner.js';
 import { exists, readJson } from './resources.js';
 import { LocalizedText, TextLanguage } from './localized-text.js';
+import { oneOf, ViewAggregate, ViewOperator } from './names.js';
 
 /**
  * A view from views/<type>.json: a report over the rows of an import, such as a trial balance.
@@ -120,8 +121,9 @@ export class ViewColumn {
         this.name = string(json, 'name');
         /** Display name. */
         this.label = LocalizedText.from(object(json, 'label'));
-        /** "sum", "count", "min", "max", or null for a grouping column. */
-        this.aggregate = optionalString(json, 'aggregate');
+        /** The aggregate, one of {@link ViewAggregate}, or null for a grouping column. */
+        const aggregate = optionalString(json, 'aggregate');
+        this.aggregate = aggregate === null ? null : oneOf(aggregate, ViewAggregate, 'view aggregate');
         /** The value per input row; null for a row count. */
         this.value = Object.prototype.hasOwnProperty.call(json, 'value') && json.value !== null ? ViewValue.from(json.value) : null;
         Object.freeze(this);
@@ -131,11 +133,7 @@ export class ViewColumn {
 /** How a view column gets its value from an input row. */
 export class ViewValue {
     constructor(operator, column, by, codes) {
-        /**
-         * "column": the value of `column`;
-         * "only": the value when `by` is one of `codes`, otherwise null;
-         * "signed": the value, negated when `by` is one of `codes`.
-         */
+        /** How the value is taken from `column`, one of {@link ViewOperator}. */
         this.operator = operator;
         /** The value column, as "table.column". */
         this.column = column;
@@ -149,11 +147,11 @@ export class ViewValue {
     /** @internal */
     static from(json) {
         if (typeof json === 'string') {
-            return new ViewValue('column', json, null, []);
+            return new ViewValue(ViewOperator.Column, json, null, []);
         }
 
         if (isObject(json)) {
-            return new ViewValue(string(json, 'op'), string(json, 'value'), optionalString(json, 'by'),
+            return new ViewValue(oneOf(string(json, 'op'), ViewOperator, 'view value operator'), string(json, 'value'), optionalString(json, 'by'),
                 [...strings(json, 'in'), ...strings(json, 'negative')]);
         }
 

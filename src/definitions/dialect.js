@@ -1,5 +1,6 @@
 import { object, objects, optionalString, string, strings } from '../internal/json.js';
 import { LocalizedText } from './localized-text.js';
+import { DialectAction, oneOf } from './names.js';
 
 /** Corrections for a package that deviates from the standard, from dialects.json. */
 export class Dialect {
@@ -26,8 +27,8 @@ export class DialectCorrection {
     constructor(json) {
         /** Diagnostic code reported when the correction is applied. */
         this.code = string(json, 'code');
-        /** "replaceNamespace", "decimalComma" or "dateFromDateTime". */
-        this.action = string(json, 'action');
+        /** What the correction does, one of {@link DialectAction}. */
+        this.action = oneOf(string(json, 'action'), DialectAction, 'dialect action');
         /** XML paths the correction applies to. */
         this.paths = Object.freeze(strings(json, 'paths'));
         /** Original value (replaceNamespace). */

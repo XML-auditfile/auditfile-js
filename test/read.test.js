@@ -3,21 +3,21 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { Auditfile, AuditfileSchema, AuditfileSource, Decimal, MemorySink, ReadMode, VersionSource } from '../src/index.js';
-import { bytes, official, officialText, source, write } from './test-files.js';
+import { bytes, sample, sampleText, source, write } from './test-files.js';
 
-test('reads the official test file', async () => {
+test('reads the sample file', async () => {
     const sink = new MemorySink();
-    const report = await Auditfile.read(source(official), sink);
+    const report = await Auditfile.read(source(sample), sink);
 
     assert.equal(report.loaded, true);
     assert.equal(report.schema.source, VersionSource.Official);
     assert.equal(report.rowCounts.size, 27);
-    assert.ok(new Decimal(314n, 2).equals(sink.rows('tr_line')[0].get('amnt')));
-    assert.equal(sink.rows('tr_line')[0].get('eff_date').toISOString(), '1967-08-13T00:00:00.000Z');
+    assert.ok(new Decimal(32700n, 2).equals(sink.rows('tr_line')[0].get('amnt')));
+    assert.equal(sink.rows('tr_line')[0].get('eff_date').toISOString(), '2025-01-15T00:00:00.000Z');
 });
 
-test('business rules find the unbalanced transaction in the official test file', async () => {
-    const report = await Auditfile.validate(source(official));
+test('business rules find the unbalanced transaction in the sample file', async () => {
+    const report = await Auditfile.validate(source(sample));
 
     assert.ok(report.diagnostics.some((d) => d.code === 'XAF-R001'));
     assert.ok(report.diagnostics.some((d) => d.code === 'XAF-R003'));
@@ -26,7 +26,7 @@ test('business rules find the unbalanced transaction in the official test file',
 
 test('rows know their parent and order', async () => {
     const sink = new MemorySink();
-    await Auditfile.read(source(official), sink);
+    await Auditfile.read(source(sample), sink);
 
     const transaction = sink.rows('transaction')[0];
     const line = sink.rows('tr_line')[0];
@@ -36,13 +36,13 @@ test('rows know their parent and order', async () => {
 });
 
 test('split files read as one audit file', async () => {
-    const cut = officialText.indexOf('<transaction>');
-    const first = bytes(officialText.slice(0, cut));
-    const second = bytes(`<!-- Vervolgbestand 2 van 2 -->\n${officialText.slice(cut)}`);
+    const cut = sampleText.indexOf('<transaction>');
+    const first = bytes(sampleText.slice(0, cut));
+    const second = bytes(`<!-- Vervolgbestand 2 van 2 -->\n${sampleText.slice(cut)}`);
 
     const whole = new MemorySink();
     const split = new MemorySink();
-    await Auditfile.read(source(official), whole);
+    await Auditfile.read(source(sample), whole);
     const report = await Auditfile.read(AuditfileSource.fromFactories(['split.xaf', () => first], ['split-2.xaf', () => second]), split);
 
     assert.equal(report.parts.length, 2);
@@ -51,7 +51,7 @@ test('split files read as one audit file', async () => {
 });
 
 test('single-use stream is validated during load and aborted when invalid', async () => {
-    const invalid = officialText.replace('<header>', '<header><vendorExtra>1</vendorExtra>');
+    const invalid = sampleText.replace('<header>', '<header><vendorExtra>1</vendorExtra>');
     const sink = new MemorySink();
 
     const report = await Auditfile.read(AuditfileSource.fromStream(bytes(invalid)), sink);
@@ -62,7 +62,7 @@ test('single-use stream is validated during load and aborted when invalid', asyn
 });
 
 test('unverified mode skips unknown elements with a warning', async () => {
-    const path = write('extra.xaf', officialText.replace('<header>', '<header><vendorExtra>1</vendorExtra>'));
+    const path = write('extra.xaf', sampleText.replace('<header>', '<header><vendorExtra>1</vendorExtra>'));
 
     const report = await Auditfile.read(source(path), new MemorySink(), { mode: ReadMode.Unverified });
 
@@ -71,26 +71,26 @@ test('unverified mode skips unknown elements with a warning', async () => {
 });
 
 test('scan counts rows and the schema survives JSON', async () => {
-    const report = await Auditfile.scan(source(official));
+    const report = await Auditfile.scan(source(sample));
     const json = report.schema.toJson();
     const back = AuditfileSchema.fromJson(json);
 
     assert.equal(report.schema.hasRowCounts, true);
-    assert.equal(report.schema.table('tr_line').rowCount, 1);
+    assert.equal(report.schema.table("tr_line").rowCount, 7);
     assert.equal(back.toJson(), json);
     assert.notEqual(back.table('tr_line').findColumn('amnt').definition, null);
 });
 
 test('parts report size and SHA-256 of the bytes as read', async () => {
-    const report = await Auditfile.scan(source(official));
-    const data = readFileSync(official);
+    const report = await Auditfile.scan(source(sample));
+    const data = readFileSync(sample);
 
     assert.equal(report.parts[0].size, data.length);
     assert.equal(report.parts[0].sha256, createHash('sha256').update(data).digest('hex'));
 });
 
 test('files in a single-byte encoding are decoded', async () => {
-    const text = officialText.replace('encoding="UTF-8"', 'encoding="windows-1252"').replace('<companyName>', '<companyName>Café ');
+    const text = sampleText.replace('encoding="UTF-8"', 'encoding="windows-1252"').replace('<companyName>', '<companyName>Café ');
     const data = Uint8Array.from(text, (c) => c.charCodeAt(0));
     const sink = new MemorySink();
 
@@ -100,17 +100,17 @@ test('files in a single-byte encoding are decoded', async () => {
 });
 
 test('reading rows yourself sees every row', async () => {
-    const reader = await Auditfile.open(source(official), { mode: ReadMode.Unverified });
+    const reader = await Auditfile.open(source(sample), { mode: ReadMode.Unverified });
     let lines = 0;
     for await (const row of reader.readRows()) {
         lines += row.table.name === 'tr_line' ? 1 : 0;
     }
 
     assert.equal(reader.schema.versionKey, 'xaf/3.2');
-    assert.equal(lines, 1);
-    assert.equal(reader.report.rowCounts.get('tr_line'), 1);
+    assert.equal(lines, 7);
+    assert.equal(reader.report.rowCounts.get("tr_line"), 7);
 });
 
 test('unknown options are refused', async () => {
-    await assert.rejects(() => Auditfile.scan(source(official), { mod: 'unverified' }), TypeError);
+    await assert.rejects(() => Auditfile.scan(source(sample), { mod: 'unverified' }), TypeError);
 });

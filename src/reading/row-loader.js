@@ -1,8 +1,11 @@
 import { Location } from '../diagnostics/collector.js';
 import { ColumnType } from '../definitions/manifest.js';
+import { DialectAction } from '../definitions/names.js';
+import { SourceError } from '../internal/streams.js';
 import { END, START, TEXT, XmlEncodingError, XmlSyntaxError } from '../internal/xml-reader.js';
 import { MappingPlan } from './mapping-plan.js';
 import { AuditfileRow } from './row.js';
+import { CANCELLATION_INTERVAL, ReadMode } from './read-options.js';
 import { tryConvert } from './value-converter.js';
 
 const XMLNS = 'http://www.w3.org/2000/xmlns/';
@@ -12,14 +15,19 @@ const XSI = 'http://www.w3.org/2001/XMLSchema-instance';
 class Frame {
     #ordinals = null;
 
-    constructor(plan, id, parentId, ordinal, part, path) {
+    constructor(plan, id, parentId, ordinal, part, node) {
         this.plan = plan;
         this.id = id;
         this.parentId = parentId;
         this.ordinal = ordinal;
         this.part = part;
-        this.path = path;
+        /** @type {import('./mapping-plan.js').PathNode} */
+        this.node = node;
         this.values = new Array(plan.table.columns.length).fill(null);
+        /** Columns that occurred, also when their value was invalid. */
+        this.present = new Array(plan.table.columns.length).fill(false);
+        /** @type {Set<import('./mapping-plan.js').PathNode>} Groups that occurred within this row. */
+        this.groups = new Set();
     }
 
     nextOrdinal(child) {
@@ -45,7 +53,8 @@ export class RowLoader {
     #validate;
     #namespace;
     #softwarePath;
-    #paths = [];
+    /** @type {import('./mapping-plan.js').PathNode[]} The open elements. */
+    #nodes = [];
     #frames = [];
     #ready = [];
     #reported = new Set();
@@ -54,6 +63,7 @@ export class RowLoader {
     #skipDepth = null;
     #capture = null;
     #event = null;
+    #checkRequired;
 
     /** True when reading stopped on a fatal error. */
     stopped = false;
@@ -73,11 +83,19 @@ export class RowLoader {
         this.#namespace = resolution.version.namespace;
         this.#softwarePath = `${resolution.version.rootElement}/header/softwareDesc`;
         this.#useDialect(resolution.dialect);
+        // Without the XSD nobody else notices a missing required field; with it, XAF-D001 already does.
+        this.#checkRequired = options.mode === ReadMode.Unverified;
     }
 
     /** @returns {AsyncGenerator<AuditfileRow>} Rows in document order of their closing tags. */
     async *rows() {
+        const signal = this.#options.signal;
+        let events = 0;
         for (;;) {
+            if (events++ % CANCELLATION_INTERVAL === 0) {
+                signal?.throwIfAborted();
+            }
+
             let event;
             try {
                 event = this.#reader.poll() ?? await this.#reader.next();
@@ -85,7 +103,9 @@ export class RowLoader {
                 if (error instanceof XmlSyntaxError) {
                     this.#diagnostics.add('XAF-X001', new Location(error.part, error.line, error.column, this.#currentPath), { detail: error.message });
                 } else if (error instanceof XmlEncodingError) {
-                    this.#diagnostics.add('XAF-X004', Location.NONE, { encoding: error.encoding });
+                    this.#diagnostics.add('XAF-X004', new Location(error.part, null, null, this.#currentPath), { encoding: error.encoding });
+                } else if (error instanceof SourceError) {
+                    this.#diagnostics.add('XAF-X002', new Location(null, null, null, this.#currentPath), { part: error.part, detail: error.message });
                 } else {
                     throw error;
                 }
@@ -109,7 +129,11 @@ export class RowLoader {
                     break;
                 case TEXT:
                     if (this.#capture !== null) {
-                        this.#capture.text += event.text;
+                        // Beyond the maximum the value is only counted, never kept.
+                        this.#capture.length += event.text.length;
+                        if (this.#capture.length <= this.#options.maxValueLength) {
+                            this.#capture.text += event.text;
+                        }
                     }
 
                     break;
@@ -130,7 +154,12 @@ export class RowLoader {
     }
 
     get #currentPath() {
-        return this.#paths.at(-1) ?? null;
+        return this.#nodes.at(-1)?.path ?? null;
+    }
+
+    /** The open element, or the node above the root element before it opens. */
+    get #current() {
+        return this.#nodes.at(-1) ?? this.#plan.root;
     }
 
     get #top() {
@@ -155,45 +184,40 @@ export class RowLoader {
             return;
         }
 
-        const current = this.#currentPath;
-        const path = current === null ? event.local : `${current}/${event.local}`;
-        if (event.ns !== this.#namespace) {
-            this.#skip(path, event);
+        const node = event.ns === this.#namespace ? this.#current.children.get(event.local) : undefined;
+        if (node === undefined) {
+            this.#skip(this.#current.childPath(event.local), event);
             return;
         }
 
-        const table = this.#plan.tables.get(path);
-        if (table !== undefined) {
-            const parent = this.#top;
-            const frame = new Frame(table, ++this.#nextId, parent?.id ?? null, parent?.nextOrdinal(table) ?? 1, event.part, path);
-            this.#readAttributes(path, frame, event);
-            if (table.isValueTable) {
-                this.#capture = { frame, column: table.table.columns[0], path, text: '', emit: true };
-                return;
-            }
-
-            this.#frames.push(frame);
-            this.#paths.push(path);
-            return;
-        }
-
-        const target = this.#plan.columns.get(path);
         const owner = this.#top;
-        if (target !== undefined && owner !== null && owner.plan === target.table) {
-            this.#capture = { frame: owner, column: target.column, path, text: '', emit: false };
-            return;
-        }
-
-        if (this.#plan.groups.has(path)) {
+        if (node.table !== null) {
+            this.#startTable(node, node.table, event);
+        } else if (node.column !== null && owner !== null && owner.plan === node.column.table) {
+            this.#capture = { frame: owner, column: node.column.column, path: node.path, text: '', length: 0, emit: false };
+        } else if (node.isGroup) {
             if (owner !== null) {
-                this.#readAttributes(path, owner, event);
+                owner.groups.add(node);
+                this.#readAttributes(node, owner, event);
             }
 
-            this.#paths.push(path);
+            this.#nodes.push(node);
+        } else {
+            this.#skip(node.path, event);
+        }
+    }
+
+    #startTable(node, table, event) {
+        const parent = this.#top;
+        const frame = new Frame(table, ++this.#nextId, parent?.id ?? null, parent?.nextOrdinal(table) ?? 1, event.part, node);
+        this.#readAttributes(node, frame, event);
+        if (table.isValueTable) {
+            this.#capture = { frame, column: table.table.columns[0], path: node.path, text: '', length: 0, emit: true };
             return;
         }
 
-        this.#skip(path, event);
+        this.#frames.push(frame);
+        this.#nodes.push(node);
     }
 
     #end(event) {
@@ -206,9 +230,15 @@ export class RowLoader {
         }
 
         if (this.#capture !== null) {
-            const { frame, column, path, text, emit } = this.#capture;
+            const { frame, column, path, text, length, emit } = this.#capture;
             this.#capture = null;
-            this.#setValue(frame, column, text, path);
+            if (length > this.#options.maxValueLength) {
+                frame.present[column.index] = true;
+                this.#diagnostics.add('XAF-S008', this.#here(path),
+                    { table: frame.plan.table.name, column: column.name, length, max: this.#options.maxValueLength });
+            } else {
+                this.#setValue(frame, column, text, path);
+            }
             if (emit) {
                 this.#emit(frame);
             }
@@ -216,8 +246,8 @@ export class RowLoader {
             return;
         }
 
-        const path = this.#paths.pop();
-        if (path !== undefined && this.#top?.path === path) {
+        const node = this.#nodes.pop();
+        if (node !== undefined && this.#top?.node === node) {
             this.#emit(this.#frames.pop());
         }
     }
@@ -232,16 +262,15 @@ export class RowLoader {
         this.#skipDepth = event.depth;
     }
 
-    #readAttributes(elementPath, frame, event) {
+    #readAttributes(element, frame, event) {
         for (const attribute of event.attributes) {
             if (attribute.ns === XMLNS || attribute.ns === XSI || attribute.local === 'xmlns' || attribute.prefix === 'xmlns') {
                 continue;
             }
 
-            const path = `${elementPath}/@${attribute.local}`;
-            const target = this.#plan.columns.get(path);
-            if (target !== undefined && target.table === frame.plan) {
-                this.#setValue(frame, target.column, attribute.value, path);
+            const target = element.attributes.get(attribute.local);
+            if (target?.column != null && target.column.table === frame.plan) {
+                this.#setValue(frame, target.column.column, attribute.value, target.path);
             }
         }
     }
@@ -259,21 +288,18 @@ export class RowLoader {
             this.#diagnostics.add('XAF-S004', this.#here(path), { value: raw, column: `${frame.plan.table.name}.${column.name}`, type: column.type });
         }
 
-        if (path === this.#softwarePath && this.#resolution.dialect === null && this.#options.applyDialects && typeof value === 'string') {
-            const dialect = this.#resolution.version.dialects.find((d) => d.softwareDescription === value);
-            if (dialect !== undefined) {
-                this.#resolution.dialect = dialect;
-                this.#useDialect(dialect);
-            }
+        frame.present[column.index] = true;
+        if (path === this.#softwarePath && typeof value === 'string' && this.#resolution.useSoftware(value, this.#options.applyDialects)) {
+            this.#useDialect(this.#resolution.dialect);
         }
     }
 
     #correct(raw, corrections, column, path) {
         for (const correction of corrections) {
             let corrected = raw;
-            if (correction.action === 'decimalComma' && raw.includes(',') && !raw.includes('.')) {
+            if (correction.action === DialectAction.DecimalComma && raw.includes(',') && !raw.includes('.')) {
                 corrected = raw.replaceAll(',', '.');
-            } else if (correction.action === 'dateFromDateTime' && column.type === ColumnType.Date && raw.trim().length > 10) {
+            } else if (correction.action === DialectAction.DateFromDateTime && column.type === ColumnType.Date && raw.trim().length > 10) {
                 corrected = raw.trim().slice(0, 10);
             }
 
@@ -292,7 +318,7 @@ export class RowLoader {
     #useDialect(dialect) {
         this.#corrections = new Map();
         for (const correction of dialect?.corrections ?? []) {
-            if (correction.action === 'replaceNamespace') {
+            if (correction.action === DialectAction.ReplaceNamespace) {
                 continue;
             }
 
@@ -304,7 +330,23 @@ export class RowLoader {
         }
     }
 
+    /**
+     * XAF-S006 for each required column the row lacks. minOccurs is relative to the column's XML parent:
+     * a column inside an optional group is only required when that group occurs.
+     */
+    #checkRequiredColumns(frame) {
+        for (const { column, group } of frame.plan.required) {
+            if (!frame.present[column.index] && (group === null || frame.groups.has(group))) {
+                this.#diagnostics.add('XAF-S006', this.#here(frame.node.path), { column: column.name, table: frame.plan.table.name });
+            }
+        }
+    }
+
     #emit(frame) {
+        if (this.#checkRequired) {
+            this.#checkRequiredColumns(frame);
+        }
+
         const row = new AuditfileRow(frame.plan.table, frame.id, frame.parentId, frame.ordinal, frame.part, frame.values);
         for (const observer of this.#observers) {
             observer.onRow(row);

@@ -41,20 +41,42 @@ function severityOf(json) {
 function format(value) {
     return value instanceof Decimal ? value.toString() : toText(value);
 }
-
-/** Collects diagnostics, formats messages from diagnostics.json and caps the total. */
+/**
+ * Collects diagnostics, formats messages from diagnostics.json and caps the list.
+ * The counts per severity cover every diagnostic, also the ones left out of a full list,
+ * and a full list makes room for an error by dropping an info or warning, so errors are never hidden behind them.
+ */
 export class DiagnosticCollector {
     #language;
     #maximum;
-    #capped = false;
+    /** @type {Diagnostic | null} */
+    #capped = null;
     /** @type {Diagnostic[]} */
-    items = [];
-    hasFatal = false;
-    hasErrors = false;
+    #items = [];
+    /** Number of diagnostics per severity, including the ones left out. */
+    counts = { info: 0, warning: 0, error: 0, fatal: 0 };
 
     constructor(language, maximum) {
         this.#language = language;
         this.#maximum = maximum;
+    }
+
+    /** @type {Diagnostic[]} The kept diagnostics, followed by XAF-X900 when some were left out. */
+    get items() {
+        return this.#capped === null ? this.#items : [...this.#items, this.#capped];
+    }
+
+    get hasFatal() {
+        return this.counts.fatal > 0;
+    }
+
+    get hasErrors() {
+        return this.hasFatal || this.counts.error > 0;
+    }
+
+    /** True when diagnostics were left out of {@link DiagnosticCollector#items}. */
+    get isTruncated() {
+        return this.#capped !== null;
     }
 
     /**
@@ -65,19 +87,41 @@ export class DiagnosticCollector {
     add(code, location, args = {}) {
         const json = entry(code);
         const severity = severityOf(json);
-        this.hasFatal ||= severity === DiagnosticSeverity.Fatal;
-        this.hasErrors ||= severity === DiagnosticSeverity.Error || severity === DiagnosticSeverity.Fatal;
+        this.counts[severity]++;
 
-        if (this.items.length >= this.#maximum && severity !== DiagnosticSeverity.Fatal) {
-            if (!this.#capped) {
-                this.#capped = true;
-                this.items.push(this.#create('XAF-X900', Location.NONE, { max: this.#maximum }));
-            }
-
+        if (this.#items.length >= this.#maximum && !this.#makeRoomFor(severity)) {
+            this.#capped ??= this.#create('XAF-X900', Location.NONE, { max: this.#maximum });
             return;
         }
 
-        this.items.push(this.#create(code, location, args));
+        this.#items.push(this.#create(code, location, args));
+    }
+
+    /**
+     * A fatal diagnostic is always kept. An error replaces the last info or warning in the list;
+     * a dropped diagnostic still counts, and the list is marked as truncated.
+     */
+    #makeRoomFor(severity) {
+        if (severity === DiagnosticSeverity.Fatal) {
+            return true;
+        }
+
+        if (severity !== DiagnosticSeverity.Error) {
+            return false;
+        }
+
+        let index = this.#items.findLastIndex((d) => d.severity === DiagnosticSeverity.Info);
+        if (index < 0) {
+            index = this.#items.findLastIndex((d) => d.severity === DiagnosticSeverity.Warning);
+        }
+
+        if (index < 0) {
+            return false;
+        }
+
+        this.#items.splice(index, 1);
+        this.#capped ??= this.#create('XAF-X900', Location.NONE, { max: this.#maximum });
+        return true;
     }
 
     #create(code, location, args) {

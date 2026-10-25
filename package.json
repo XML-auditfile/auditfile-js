@@ -2,19 +2,41 @@
   "name": "@xml-auditfile/auditfile",
   "version": "0.1.0-alpha",
   "description": "Streaming reader for Dutch tax audit files (XAF and related), following auditfile-spec.",
+  "keywords": [
+    "xaf",
+    "auditfile",
+    "auditfile-financieel",
+    "xml-auditfile",
+    "belastingdienst",
+    "audit",
+    "accounting",
+    "xml"
+  ],
   "license": "Apache-2.0",
   "author": "XML-auditfile",
+  "homepage": "https://github.com/XML-auditfile/auditfile-js#readme",
+  "bugs": {
+    "url": "https://github.com/XML-auditfile/auditfile-js/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/XML-auditfile/auditfile-js.git"
   },
   "type": "module",
+  "types": "./types/index.d.ts",
   "exports": {
-    ".": "./src/index.js",
-    "./memory": "./src/memory/memory-sink.js"
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./memory": {
+      "types": "./types/memory/memory-sink.d.ts",
+      "default": "./src/memory/memory-sink.js"
+    }
   },
   "files": [
     "src/",
+    "types/",
     "LICENSE",
     "README.md"
   ],
@@ -22,13 +44,21 @@
     "node": ">=20"
   },
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "spec": "node tools/embed-spec.mjs",
+    "types": "tsc -p tsconfig.types.json",
     "pretest": "node tools/embed-spec.mjs",
     "test": "node --test \"test/**/*.test.js\"",
-    "prepack": "node tools/embed-spec.mjs"
+    "prepack": "node tools/embed-spec.mjs && tsc -p tsconfig.types.json"
   },
   "dependencies": {
     "saxes": "6.0.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
   }
 }

@@ -1,7 +1,26 @@
-import { OPEN, PartInfo } from '../reading/source.js';
+import { OPEN, PartInfo, SourceUsageError } from '../reading/source.js';
+import { PartEncoding, PartEncodingError } from './encoding.js';
 import { Sha256 } from './sha256.js';
 
 const PREFIX_SIZE = 1024;
+
+/** A part could not be opened or read; reported as XAF-X002, never thrown to the caller. */
+export class SourceError extends Error {
+    constructor(part, cause) {
+        super(cause?.message ?? String(cause), { cause });
+        this.name = 'SourceError';
+        this.part = part;
+    }
+}
+
+/** Runs a call into the caller's stream or factory; any failure becomes a SourceError for that part. */
+async function guarded(part, call) {
+    try {
+        return await call();
+    } catch (error) {
+        throw error instanceof SourceError || error instanceof SourceUsageError ? error : new SourceError(part, error);
+    }
+}
 
 /** @param {unknown} chunk */
 function toBytes(chunk) {
@@ -85,25 +104,10 @@ export function iterate(stream, keepOpen) {
     throw new TypeError('Unsupported stream: pass a Readable, ReadableStream, Blob, Uint8Array or an iterable of Uint8Array.');
 }
 
-/** Number of bytes of a leading UTF-8 BOM and XML declaration. */
-function skipDeclaration(bytes) {
-    const length = Math.min(bytes.length, PREFIX_SIZE);
-    const position = length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
-    if (length - position >= 5 && bytes[position] === 0x3c && bytes[position + 1] === 0x3f && bytes[position + 2] === 0x78
-        && bytes[position + 3] === 0x6d && bytes[position + 4] === 0x6c) {
-        for (let i = position + 5; i < length - 1; i++) {
-            if (bytes[i] === 0x3f && bytes[i + 1] === 0x3e) {
-                return i + 2;
-            }
-        }
-    }
-
-    return position;
-}
-
 /**
  * Reads the parts of a source one after another as one document.
- * For continuation parts a leading byte order mark and XML declaration are skipped.
+ * For continuation parts a leading byte order mark and XML declaration are skipped; a part in another encoding
+ * than the first is refused (PartEncodingError), because it would be decoded with the encoding of the first part.
  * Collects size, SHA-256 and line count per part when collectStatistics is set.
  */
 export class ConcatenatedStream {
@@ -114,6 +118,8 @@ export class ConcatenatedStream {
     part = 0;
     /** Bytes handed out so far, over all parts. */
     position = 0;
+    /** @type {PartEncoding | null} */
+    #encoding = null;
 
     /**
      * @param {readonly import('../reading/source.js').SourcePart[]} parts
@@ -128,8 +134,9 @@ export class ConcatenatedStream {
     async *chunks() {
         for (const part of this.#parts) {
             this.part = part.number;
-            const { stream, keepOpen } = await part[OPEN]();
+            const { stream, keepOpen } = await guarded(part.name, () => part[OPEN]());
             const iterator = iterate(stream, keepOpen);
+            const next = () => guarded(part.name, () => iterator.next());
             const statistics = this.collectStatistics ? { hash: Sha256.create(), size: 0, lines: 1, lastWasCarriageReturn: false } : null;
             const track = (bytes) => {
                 if (statistics === null) {
@@ -159,7 +166,7 @@ export class ConcatenatedStream {
                 let prefixLength = 0;
                 let done = false;
                 while (prefixLength < PREFIX_SIZE) {
-                    const result = await iterator.next();
+                    const result = await next();
                     if (result.done) {
                         done = true;
                         break;
@@ -172,14 +179,21 @@ export class ConcatenatedStream {
 
                 const first = concat(prefix, prefixLength);
                 track(first);
-                const rest = part.number === 1 ? first : first.subarray(skipDeclaration(first));
+                const encoding = PartEncoding.detect(first);
+                if (part.number === 1) {
+                    this.#encoding = encoding;
+                } else if (!encoding.sameAs(this.#encoding)) {
+                    throw new PartEncodingError(part.number, encoding, this.#encoding);
+                }
+
+                const rest = part.number === 1 ? first : first.subarray(encoding.skipDeclaration(first, Math.min(first.length, PREFIX_SIZE)));
                 if (rest.length > 0) {
                     this.position += rest.length;
                     yield rest;
                 }
 
                 while (!done) {
-                    const result = await iterator.next();
+                    const result = await next();
                     if (result.done) {
                         break;
                     }

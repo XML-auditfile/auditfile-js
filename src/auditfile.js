@@ -1,4 +1,4 @@
-import { normalizeOptions, ReadMode, ReadProgress } from './reading/read-options.js';
+import { normalizeOptions, ReadProgress } from './reading/read-options.js';
 import { ReadSession } from './reading/read-session.js';
 import { AuditfileSource } from './reading/source.js';
 import { checkSink, ImportContext, NULL_SINK, SinkCapabilities } from './sinks/sink.js';
@@ -70,7 +70,13 @@ export class Auditfile {
             settings.onProgress?.(new ReadProgress(rows, total));
         } catch (error) {
             await session.dispose();
-            await sink.abort(session.createReport(false));
+            try {
+                await sink.abort(session.createReport(false));
+            } catch (abortError) {
+                // A failing rollback must not hide why the import failed: the caller gets both.
+                throw new AggregateError([error, abortError], 'The import failed, and aborting the sink failed too.');
+            }
+
             throw error;
         }
 
@@ -86,12 +92,15 @@ export class Auditfile {
     }
 
     /**
-     * Validates an audit file completely (XSD, structure, keys, business rules) without storing anything.
+     * Validates an audit file (structure, keys, business rules) without storing anything.
+     * In verified mode (the default) the XSD is checked first and the rest only for a valid file;
+     * unverified mode skips the XSD and checks everything else, which is faster but reports fewer deviations
+     * (e.g. XAF-S004 instead of XAF-D001 for an invalid value).
      * @param {AuditfileSource} source
      * @param {import('./reading/read-options.js').ReadOptions} [options]
      */
     static validate(source, options = undefined) {
-        return Auditfile.read(source, NULL_SINK, { ...options, mode: ReadMode.Verified });
+        return Auditfile.read(source, NULL_SINK, options);
     }
 
     /**
@@ -128,6 +137,7 @@ export class AuditfileReader {
     #session;
     #ready;
     #started = false;
+    #report = null;
 
     /** @internal */
     constructor(session, ready) {
@@ -141,18 +151,36 @@ export class AuditfileReader {
     }
 
     /**
-     * Rows in document order; a row is returned when its element closes.
+     * Rows in document order; a row is returned when its element closes. The rows are read while you iterate,
+     * and can be iterated only once: collect them in an array when you need them twice.
      * @returns {AsyncGenerator<import('./reading/row.js').AuditfileRow>}
+     * @throws {Error} The rows are iterated a second time.
      */
     async *readRows() {
-        if (this.#ready && !this.#started) {
-            this.#started = true;
+        if (this.#started) {
+            throw new Error('The rows of an audit file can be iterated only once; collect them in an array to use them twice.');
+        }
+
+        this.#started = true;
+        if (this.#ready) {
             yield* this.#session.load();
         }
     }
 
-    /** The report; complete after {@link AuditfileReader#readRows} has been iterated to the end. */
+    /**
+     * The report; complete after {@link AuditfileReader#readRows} has been iterated to the end. Until then every call gives
+     * the report so far; the complete report is made once and kept.
+     */
     get report() {
-        return this.#session.createReport(false);
+        if (this.#report !== null) {
+            return this.#report;
+        }
+
+        const report = this.#session.createReport(false);
+        if (!this.#ready || this.#session.loaded) {
+            this.#report = report;
+        }
+
+        return report;
     }
 }

@@ -16,6 +16,9 @@ export const VersionSource = Object.freeze({
 
 const SOURCES = new Set(Object.values(VersionSource));
 
+/** Format version written by toJson; fromJson refuses any other. */
+const FORMAT_VERSION = 1;
+
 /**
  * The schema of one import: tables, columns, types, keys, references, row counts and origin.
  * This is the contract everything after the reader builds on, regardless of where the data is stored.
@@ -70,7 +73,7 @@ export class AuditfileSchema {
     /** Serializes the schema to compact JSON, e.g. for storage in a database. */
     toJson() {
         return JSON.stringify({
-            formatVersion: 1,
+            formatVersion: FORMAT_VERSION,
             version: this.versionKey,
             namespace: this.namespace,
             source: this.source,
@@ -106,7 +109,7 @@ export class AuditfileSchema {
     /**
      * Reads a schema written by {@link AuditfileSchema#toJson}.
      * @param {string} json
-     * @throws {SyntaxError} The JSON is not a valid schema.
+     * @throws {SyntaxError} The JSON is not a valid schema, or uses a format version, column type or version source this reader does not know.
      */
     static fromJson(json) {
         if (typeof json !== 'string') {
@@ -114,6 +117,10 @@ export class AuditfileSchema {
         }
 
         const root = parseObject(json, 'Schema JSON');
+        if (root.formatVersion !== FORMAT_VERSION) {
+            throw new SyntaxError(`Schema JSON format version ${root.formatVersion ?? '(missing)'} is not supported; this reader reads format version ${FORMAT_VERSION}.`);
+        }
+
         const versionKey = string(root, 'version');
         const definitions = AuditfileVersion.find(versionKey)?.definitions ?? null;
         const lookup = (key) => definitions?.get(key) ?? null;
@@ -135,7 +142,11 @@ export class AuditfileSchema {
         });
 
         const source = string(root, 'source');
-        return new AuditfileSchema(versionKey, string(root, 'namespace'), SOURCES.has(source) ? source : VersionSource.Official,
+        if (!SOURCES.has(source)) {
+            throw new SyntaxError(`Unknown version source '${source}' in schema JSON.`);
+        }
+
+        return new AuditfileSchema(versionKey, string(root, 'namespace'), source,
             optionalString(root, 'dialect'), bool(root, 'hasRowCounts'), tables);
     }
 

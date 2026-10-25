@@ -1,10 +1,10 @@
+import { SEPARATOR } from '../internal/composite-key.js';
 import { Decimal } from '../internal/decimal.js';
 import { digitsOf, normalizeWhiteSpace } from './datatypes.js';
 import { qualified } from './schema-set.js';
 
 const XSI = 'http://www.w3.org/2001/XMLSchema-instance';
 const XMLNS = 'http://www.w3.org/2000/xmlns/';
-const SEPARATOR = '\u001f';
 const MAX_PENDING_REFERENCES = 100_000;
 const MAX_SHOWN = 100;
 const NONE = Object.freeze([]);
@@ -134,7 +134,16 @@ export class XsdValidator {
      * @param {import('./schema-set.js').SchemaSet} set
      * @param {(message: string, line: number | null, column: number | null) => void} report
      */
-    constructor(set, report) {
+    #maxValueLength;
+    #identityConstraints;
+
+    /**
+     * @param {number} [maxValueLength] Longer values are not kept and not checked; the reader reports them (XAF-S008).
+     * @param {boolean} [identityConstraints] Evaluate key, unique and keyref; off when another check does that work.
+     */
+    constructor(set, report, maxValueLength = Infinity, identityConstraints = true) {
+        this.#maxValueLength = maxValueLength;
+        this.#identityConstraints = identityConstraints;
         this.#set = set;
         this.#report = report;
     }
@@ -161,7 +170,7 @@ export class XsdValidator {
             frame.active = parent.active.filter((scope) => scope.start(event));
         }
 
-        if (declaration !== null && declaration.constraints.length > 0) {
+        if (declaration !== null && declaration.constraints.length > 0 && this.#identityConstraints) {
             frame.scopes = declaration.constraints.map((constraint) => new IdentityScope(constraint, event.depth));
             for (const scope of frame.scopes) {
                 if (scope.constraint.kind === 'keyref') {
@@ -183,7 +192,11 @@ export class XsdValidator {
         }
 
         if (frame.type.kind === 'simple') {
-            frame.text += event.text;
+            if (frame.text !== null && frame.text.length + event.text.length <= this.#maxValueLength) {
+                frame.text += event.text;
+            } else {
+                frame.text = null;
+            }
         } else if (frame.type.kind === 'complex' && !frame.textReported && /[^ \t\r\n]/.test(event.text)) {
             frame.textReported = true;
             this.#error(event, `Element '${frame.local}': Character content other than whitespace is not allowed because the content type is 'element-only'.`);
@@ -200,10 +213,10 @@ export class XsdValidator {
         let value = null;
         if (!frame.skip) {
             if (frame.type.kind === 'simple') {
-                const result = validateSimple(frame.type, frame.text);
+                const result = frame.text === null ? { value: null } : validateSimple(frame.type, frame.text);
                 if ('error' in result) {
                     this.#error(event, `Element '${frame.local}': ${result.error}`);
-                } else {
+                } else if (result.value !== null) {
                     value = keyValue(frame.type, result.value);
                     if (frame.type.builtin.id) {
                         this.#id(event, result.value);

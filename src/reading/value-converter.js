@@ -6,8 +6,10 @@ import { Decimal } from '../internal/decimal.js';
 const INTEGER = /^[+-]?\d+$/;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_ZONE = /^(?:|Z|[+-]\d{2}:\d{2})$/;
-const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,7}))?(Z|[+-]\d{2}:\d{2})?$/;
-const TIME = /^(\d{2}):(\d{2}):(\d{2})$/;
+// Only the XSD notation: a date-time like 03/01/2017 10:00:00 or with a space instead of T is refused, never guessed.
+const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,7}))?(Z|[+-]\d{2}:\d{2})?$/;
+// hh:mm:ss with an optional fraction (dropped) and time zone (ignored), as for a date.
+const TIME = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/;
 
 // The range of .NET long, so every implementation accepts the same integers; JavaScript numbers must also be safe.
 const MIN_INTEGER = -(2n ** 63n);
@@ -96,12 +98,12 @@ export function tryConvert(raw, type) {
         }
 
         case ColumnType.Time: {
-            const match = TIME.exec(text.length >= 8 ? text.slice(0, 8) : text);
+            const match = TIME.exec(text);
             if (match === null || Number(match[1]) > 23 || Number(match[2]) > 59 || Number(match[3]) > 59) {
                 return FAILED;
             }
 
-            return ok(match[0]);
+            return ok(`${match[1]}:${match[2]}:${match[3]}`);
         }
 
         case ColumnType.Boolean:

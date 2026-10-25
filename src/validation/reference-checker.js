@@ -1,8 +1,8 @@
 import { Location } from '../diagnostics/collector.js';
+import { SEPARATOR } from '../internal/composite-key.js';
 import { toText } from '../reading/value-converter.js';
 
 const MAX_PENDING_PER_REFERENCE = 100_000;
-const SEPARATOR = '\u001f';
 
 /**
  * Checks keys (unique) and references (existing) from the schema.
@@ -53,8 +53,18 @@ export class ReferenceChecker {
 
         for (const reference of this.#referencesByTable.get(row.table) ?? []) {
             const value = composite(row, reference.columns);
-            if (value !== null && !reference.key.values.has(value) && reference.pending.size < MAX_PENDING_PER_REFERENCE) {
+            if (value === null || reference.key.values.has(value) || reference.pending.has(value)) {
+                continue;
+            }
+
+            if (reference.pending.size < MAX_PENDING_PER_REFERENCE) {
                 reference.pending.add(value);
+            } else if (!reference.overflowed) {
+                // From here on new values are not checked; say so once, so a clean result is not mistaken for a complete one.
+                reference.overflowed = true;
+                this.#diagnostics.add('XAF-R017', new Location(row.part, null, null, row.table.path), {
+                    table: row.table.name, column: reference.columnNames, target: reference.key.table.name, max: MAX_PENDING_PER_REFERENCE,
+                });
             }
         }
     }
@@ -124,6 +134,8 @@ class KeyState {
 
 class ReferenceState {
     pending = new Set();
+    /** True once the pending limit was reached and XAF-R017 was reported. */
+    overflowed = false;
 
     constructor(table, columnNames, columns, key) {
         this.table = table;

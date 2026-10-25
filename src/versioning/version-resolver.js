@@ -1,3 +1,4 @@
+import { DialectAction } from '../definitions/names.js';
 import { Location } from '../diagnostics/collector.js';
 import { VersionSource } from '../schema/schema.js';
 import { AuditfileVersion } from './version.js';
@@ -15,6 +16,21 @@ export class Resolution {
 
     get needsMapping() {
         return this.fileNamespace !== this.version.namespace;
+    }
+
+    /**
+     * Recognizes a dialect by the software description in the header, when none was recognized by namespace.
+     * Returns true when a dialect was found.
+     * @param {string} software
+     * @param {boolean} applyDialects
+     */
+    useSoftware(software, applyDialects) {
+        if (this.dialect !== null || !applyDialects) {
+            return false;
+        }
+
+        this.dialect = this.version.dialects.find((d) => d.softwareDescription === software) ?? null;
+        return this.dialect !== null;
     }
 }
 
@@ -40,7 +56,7 @@ export function resolveVersion(rootName, fileNamespace, options, diagnostics) {
         diagnostics.add('XAF-V006', Location.NONE, { version: version.key });
     }
 
-    const replace = resolution.dialect?.corrections.find((c) => c.action === 'replaceNamespace' && c.from === fileNamespace);
+    const replace = resolution.dialect?.corrections.find((c) => c.action === DialectAction.ReplaceNamespace && c.from === fileNamespace);
     if (replace !== undefined) {
         diagnostics.add(replace.code, Location.NONE, { from: fileNamespace, to: version.namespace });
     }

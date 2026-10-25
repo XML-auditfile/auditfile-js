@@ -1,20 +1,28 @@
-import { createReadStream, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createReadStream, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AuditfileSource } from '../src/index.js';
 
-// The official XAF 3.2 test file from auditfile-spec, and variations of it written to a temporary folder.
+// The XAF 3.2 sample of this repository (test/data), with two intended findings (XAF-R001, XAF-R003),
+// and variations of it written to a temporary folder.
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const specRoot = resolve(root, process.env.SPEC_ROOT ?? 'spec');
 
 export const OFFICIAL_NAMESPACE = 'http://www.auditfiles.nl/XAF/3.2';
-export const official = join(specRoot, 'sources', 'xaf', 'XAF_3.2_20170904', 'XmlAuditfileFinancieel3.2_test.xml');
-export const officialText = readFileSync(official, 'utf8').replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+export const sample = join(root, 'test', 'data', 'xaf-3.2-sample.xaf');
+export const sampleText = readFileSync(sample, 'utf8').replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+
+/** One folder per test file, removed when it ends. */
+let runFolder = null;
 
 export function write(name, content) {
-    const path = join(mkdtempSync(join(tmpdir(), 'auditfile-js-tests-')), name);
+    if (runFolder === null) {
+        runFolder = mkdtempSync(join(tmpdir(), 'xmlauditfile-js-tests-'));
+        process.on('exit', () => rmSync(runFolder, { recursive: true, force: true }));
+    }
+
+    const path = join(mkdtempSync(join(runFolder, 'f-')), name);
     writeFileSync(path, content);
     return path;
 }
@@ -25,7 +33,7 @@ export function source(path) {
 }
 
 export function withNamespace(ns) {
-    return write('namespace.xaf', officialText.replace(`xmlns="${OFFICIAL_NAMESPACE}"`, `xmlns="${ns}"`));
+    return write('namespace.xaf', sampleText.replace(`xmlns="${OFFICIAL_NAMESPACE}"`, `xmlns="${ns}"`));
 }
 
 export function bytes(text) {

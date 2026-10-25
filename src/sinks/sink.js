@@ -20,16 +20,6 @@ export const SinkCapabilities = Object.freeze({
  * @property {(report: import('../diagnostics/report.js').AuditfileReport) => void | Promise<void>} abort The import failed; discard everything received since begin.
  */
 
-/**
- * A stored import, e.g. in a database. Gives back the schema and the rows per table,
- * so code can work with an import regardless of where it is stored. Implemented by connectors.
- *
- * @typedef {object} AuditfileStore
- * @property {() => Promise<import('../schema/schema.js').AuditfileSchema>} getSchema The schema of the stored import.
- * @property {(table: string, onBatch: (rows: readonly import('../reading/row.js').AuditfileRow[]) => Promise<void>) => Promise<void>} readRows
- *   Reads the rows of one table in batches, in id order.
- */
-
 /** Information at the start of an import. */
 export class ImportContext {
     /** @internal */

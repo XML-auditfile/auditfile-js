@@ -1,0 +1,121 @@
+name: Release
+
+# Run manually with the new version, e.g. 1.0.1 or 1.1.0-beta.1:
+# - from main: the version must be higher than every existing release;
+# - from release/X.Y (maintenance of an older line, e.g. a security fix 0.1.1 after 1.0.0):
+#   the version must be in line X.Y and higher than the latest release in that line.
+#   Branch release/X.Y off the tag of that line, e.g. git switch -c release/0.1 0.1.0.
+# Checks the version, fetches the auditfile-spec pinned in spec.lock.json, tests, packs (with the embedded spec and
+# the TypeScript declarations), creates the tag and GitHub release, and publishes to npm when the NPM_PUBLISH variable
+# is "true".
+#
+# Publishing uses npm Trusted Publishing: no token is stored. GitHub gives this job an OIDC token, and npm accepts it
+# only for the trusted publisher set on the package (this repository, this workflow file, the environment "npm").
+# npm adds a provenance statement that links the published version to this run and commit.
+#
+# npm dist-tags: a stable release that becomes the highest is "latest", a pre-release is "next",
+# and a maintenance release of an older line is "release-X.Y", so "latest" never moves back.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version (semver without prefix, e.g. 1.0.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write # tag and GitHub release
+  id-token: write # OIDC token for npm Trusted Publishing and provenance
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Protection rules (e.g. a required reviewer) are set on this environment in the repository settings.
+    environment: npm
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # all tags, for the version check
+
+      - name: Check version
+        id: version
+        shell: pwsh
+        run: |
+          . ./tools/semver.ps1
+          $isLatest = Assert-ReleaseVersion $env:VERSION $env:GITHUB_REF @(git tag --list)
+          $tag = if ($env:VERSION -match '^[^+]*-') { 'next' } elseif ($isLatest) { 'latest' } else { "release-$(Get-SemVerLine $env:VERSION)" }
+          "latest=$($isLatest.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "dist-tag=$tag" >> $env:GITHUB_OUTPUT
+
+      # Node 24 ships npm 11, which Trusted Publishing needs.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Fetch auditfile-spec (spec.lock.json)
+        id: spec
+        shell: pwsh
+        run: |
+          ./tools/fetch-spec.ps1
+          $lock = Get-Content spec.lock.json -Raw | ConvertFrom-Json
+          if (-not $lock.tag) {
+            Write-Host "::warning::spec.lock.json pins auditfile-spec commit $($lock.commit) without a release tag."
+          }
+          $label = if ($lock.tag) { $lock.tag } else { $lock.commit.Substring(0, 7) }
+          "label=$label" >> $env:GITHUB_OUTPUT
+          "url=https://github.com/$($lock.repository)/tree/$($lock.commit)" >> $env:GITHUB_OUTPUT
+
+      - name: Install
+        run: npm ci
+
+      - name: Set version
+        run: npm version "$VERSION" --no-git-tag-version
+
+      - name: Test
+        run: npm test
+
+      - name: Audit dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
+      # prepack embeds the spec and generates the TypeScript declarations.
+      - name: Pack
+        run: |
+          mkdir artifacts
+          npm pack --pack-destination artifacts
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPEC_LABEL: ${{ steps.spec.outputs.label }}
+          SPEC_URL: ${{ steps.spec.outputs.url }}
+          LATEST: ${{ steps.version.outputs.latest }}
+        run: |
+          prerelease=""
+          if [[ "$VERSION" == *-* ]]; then prerelease="--prerelease"; fi
+          gh release create "$VERSION" artifacts/*.tgz \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --notes "Built with auditfile-spec [$SPEC_LABEL]($SPEC_URL)." \
+            --generate-notes \
+            --latest="$LATEST" \
+            $prerelease
+
+      # Last, because an npm version cannot be published again, not even after unpublishing.
+      # npm accepts a trusted publisher only for a package that exists. The very first version is therefore published
+      # with a short-lived granular token in the secret NPM_TOKEN; after that, configure the trusted publisher on
+      # npmjs.com and delete the secret. Without the secret, npm uses Trusted Publishing.
+      - name: Publish to npm
+        if: vars.NPM_PUBLISH == 'true'
+        env:
+          DIST_TAG: ${{ steps.version.outputs.dist-tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish artifacts/*.tgz --tag "$DIST_TAG" --access public --provenance

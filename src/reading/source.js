@@ -1,6 +1,14 @@
 /** Opens a part; internal so callers cannot bypass the single-use check. */
 export const OPEN = Symbol('open');
 
+/** A source used in a way it does not allow, such as reading a single-use stream twice: the caller's mistake. */
+export class SourceUsageError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'SourceUsageError';
+    }
+}
+
 /**
  * Where an audit file comes from: one stream, or several streams for the parts of a split audit file.
  * The reader never opens files itself; the caller supplies the streams, so the same code runs on a server and in the browser.
@@ -50,7 +58,7 @@ export class AuditfileSource {
             let used = false;
             return new SourcePart(i + 1, name, () => {
                 if (used) {
-                    throw new Error('This stream source can only be read once.');
+                    throw new SourceUsageError('This stream source can only be read once.');
                 }
 
                 used = true;

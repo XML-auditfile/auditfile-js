@@ -9,6 +9,9 @@ export const ReadMode = Object.freeze({
     Unverified: 'unverified',
 });
 
+/** XML events between two checks of the abort signal. @internal */
+export const CANCELLATION_INTERVAL = 10_000;
+
 /** Progress of a read. */
 export class ReadProgress {
     /** @internal */
@@ -32,8 +35,10 @@ export class ReadProgress {
  * @property {'nl' | 'en'} [language] Language of diagnostic messages (default Dutch).
  * @property {number} [maxDiagnostics] Maximum number of diagnostics; the rest is summarized (default 1000).
  * @property {number} [maxDepth] Maximum element nesting; deeper files are refused (default 64).
+ * @property {number} [maxCharactersInDocument] Maximum characters in the whole document, all parts together; a larger file stops with XAF-X001 (default 4 Gi; 0 is no limit).
+ * @property {number} [maxValueLength] Maximum characters of one value; a longer value is skipped with XAF-S008 and never held in memory as a whole (default 65536; the longest value an XSD allows is 999).
  * @property {((progress: ReadProgress) => void) | null} [onProgress] Receives progress after every batch.
- * @property {AbortSignal | null} [signal] Cancels reading between batches.
+ * @property {AbortSignal | null} [signal] Cancels reading, in the scan phase as well as the load phase; the call then rejects with the signal's reason.
  */
 
 const DEFAULTS = Object.freeze({
@@ -46,6 +51,8 @@ const DEFAULTS = Object.freeze({
     language: TextLanguage.Dutch,
     maxDiagnostics: 1000,
     maxDepth: 64,
+    maxCharactersInDocument: 4 * 1024 ** 3,
+    maxValueLength: 65_536,
     onProgress: null,
     signal: null,
 });
@@ -113,6 +120,10 @@ export function normalizeOptions(options) {
     positiveInteger('batchSize', merged.batchSize);
     positiveInteger('maxDiagnostics', merged.maxDiagnostics);
     positiveInteger('maxDepth', merged.maxDepth);
+    positiveInteger('maxValueLength', merged.maxValueLength);
+    if (!Number.isSafeInteger(merged.maxCharactersInDocument) || merged.maxCharactersInDocument < 0) {
+        throw new RangeError('maxCharactersInDocument must be a non-negative integer.');
+    }
     optionalFunction('xsd', merged.xsd);
     optionalFunction('onProgress', merged.onProgress);
     merged.useResolver = merged.useResolver === true;

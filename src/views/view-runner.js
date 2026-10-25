@@ -1,5 +1,7 @@
-import { DiagnosticCollector, Location } from '../diagnostics/collector.js';
 import { ColumnType } from '../definitions/manifest.js';
+import { ViewAggregate, ViewOperator } from '../definitions/names.js';
+import { DiagnosticCollector, Location } from '../diagnostics/collector.js';
+import { SEPARATOR } from '../internal/composite-key.js';
 import { Decimal } from '../internal/decimal.js';
 import { toText, tryConvert } from '../reading/value-converter.js';
 import { ViewResult } from './view-result.js';
@@ -8,7 +10,6 @@ import { ViewResult } from './view-result.js';
 // joins are left joins, so a missing ancestor or lookup leaves its columns null.
 
 const MAXIMUM_DIAGNOSTICS = 100;
-const SEPARATOR = '\u001f';
 
 /** @internal */
 export function runView(view, schema, rows, parameters, language) {
@@ -362,10 +363,6 @@ class Expression {
     #by;
 
     constructor(value, resolve) {
-        if (!['column', 'only', 'signed'].includes(value.operator)) {
-            throw new Error(`View value operator '${value.operator}' is not supported.`);
-        }
-
         this.#value = value;
         this.#column = resolve(value.column);
         this.#by = value.by === null ? null : resolve(value.by);
@@ -377,13 +374,13 @@ class Expression {
 
     evaluate(input) {
         const cell = this.#column.get(input);
-        if (this.#value.operator === 'column' || cell === null) {
+        if (this.#value.operator === ViewOperator.Column || cell === null) {
             return cell;
         }
 
         const by = this.#by?.get(input) ?? null;
         const listed = by !== null && this.#value.codes.includes(format(by));
-        if (this.#value.operator === 'only') {
+        if (this.#value.operator === ViewOperator.Only) {
             return listed ? cell : null;
         }
 
@@ -409,19 +406,15 @@ class Aggregator {
 
     constructor(output) {
         this.#kind = output.column.aggregate;
-        if (!['sum', 'count', 'min', 'max'].includes(this.#kind)) {
-            throw new Error(`View aggregate '${this.#kind}' is not supported.`);
-        }
-
         this.#countRows = output.expression === null;
         this.#decimal = output.expression?.type === ColumnType.Decimal;
     }
 
     get result() {
         switch (this.#kind) {
-            case 'count':
+            case ViewAggregate.Count:
                 return this.#count;
-            case 'sum':
+            case ViewAggregate.Sum:
                 return this.#decimal ? this.#sum : this.#sum.toNumber();
             default:
                 return this.#extreme;
@@ -435,17 +428,17 @@ class Aggregator {
 
         this.#count++;
         switch (this.#kind) {
-            case 'sum':
+            case ViewAggregate.Sum:
                 this.#decimal ||= value instanceof Decimal;
                 this.#sum = this.#sum.add(Decimal.from(value));
                 break;
-            case 'min':
+            case ViewAggregate.Min:
                 if (this.#extreme === null || compare(value, this.#extreme) < 0) {
                     this.#extreme = value;
                 }
 
                 break;
-            case 'max':
+            case ViewAggregate.Max:
                 if (this.#extreme === null || compare(value, this.#extreme) > 0) {
                     this.#extreme = value;
                 }

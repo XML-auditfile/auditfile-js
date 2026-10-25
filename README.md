@@ -7,6 +7,14 @@ Streaming reader for Dutch tax audit files (XAF and related), following
 > Status: draft (0.x).
 > Not affiliated with the Belastingdienst, SRA or any software vendor.
 
+```
+npm install @xml-auditfile/auditfile
+```
+
+The package ships TypeScript declarations, generated from the JSDoc. Every version is published from GitHub Actions with
+[provenance](https://docs.npmjs.com/generating-provenance-statements): `npm audit signatures` verifies that it was built
+from this repository.
+
 ```js
 import { createReadStream } from 'node:fs';
 import { Auditfile, AuditfileSource, MemorySink } from '@xml-auditfile/auditfile';
@@ -20,9 +28,16 @@ for (const diagnostic of report.diagnostics) {
 }
 
 for (const line of sink.rows('tr_line')) {
-    console.log(`${line.get('acc_id')} ${line.get('amnt')} ${line.get('amnt_tp')}`);
+    console.log(`${line.getString('acc_id')} ${line.getDecimal('amnt')} ${line.getString('amnt_tp')}`);
 }
 ```
+
+Rows have typed accessors (`getString`, `getDecimal`, `getInteger`, `getDate`, `getDateTime`, `getTime`, `getBoolean`) that check
+the column type and name the problem; `has()` tells whether a column exists in this version. `getDecimal` also reads an integer
+column, since a column can be integer in one version and decimal in another. In a loop over many rows, look the column up once
+(`table.findColumn('amnt')`) and pass it instead of the name.
+
+Values are read in XSD notation only: a date-time such as `03/01/2017 10:00:00` is refused (XAF-S004) rather than guessed.
 
 ## What it does
 
@@ -42,9 +57,9 @@ for (const line of sink.rows('tr_line')) {
 | Call | Use |
 | ---- | --- |
 | `await Auditfile.read(source, sink, options)` | Read into a sink: `MemorySink` or your own sink |
-| `await Auditfile.validate(source, options)` | Validate completely without storing anything |
+| `await Auditfile.validate(source, options)` | Validate without storing anything; `mode: 'unverified'` skips the XSD |
 | `await Auditfile.scan(source, options)` | Version, XSD validation and row counts only |
-| `(await Auditfile.open(source, options)).readRows()` | Stream rows yourself (`for await`) |
+| `(await Auditfile.open(source, options)).readRows()` | Stream rows yourself (`for await`); the rows can be iterated once |
 | `AuditfileVersion.Financial.V3_2` | Manifest, XSD, definitions, dialects and views of a version |
 | `schema.toJson()` / `AuditfileSchema.fromJson()` | Store and restore the schema of an import |
 
@@ -60,7 +75,9 @@ Sources: the reader never opens files; you supply the streams. A stream is a Nod
 
 Options are a plain object: `version` (an `AuditfileVersion` or `"xaf/3.2"`), `mode` (`'verified'` or
 `'unverified'`), `useResolver`, `xsd`, `applyDialects`, `batchSize`, `language` (`'nl'` or `'en'`),
-`maxDiagnostics`, `maxDepth`, `onProgress` and `signal` (an `AbortSignal`). Unknown names are refused.
+`maxDiagnostics`, `maxDepth`, `maxCharactersInDocument`, `maxValueLength`, `onProgress` and `signal` (an `AbortSignal`,
+checked in the scan phase as well as the load phase). Unknown names and values out of range are refused.
+When a sink fails and its `abort` fails too, the read rejects with an `AggregateError` holding both errors.
 
 A sink is any object with `begin(context)`, `write(table, rows)`, `complete(report)` and `abort(report)`;
 each may return a promise. Set `capabilities = SinkCapabilities.NeedsRowCounts` to get row counts before the first row.
@@ -84,11 +101,33 @@ The reader is built for files from untrusted sources:
 - DTDs are refused, so there is no entity expansion and nothing is fetched (XXE, billion laughs).
 - XSD imports resolve only to the definitions embedded in the package; never to disk or network.
 - Nesting deeper than `maxDepth` (64) stops reading; the root element must appear within the first megabyte.
-- Memory does not grow with the file: only open elements, key values and unresolved references
-  (capped per reference) are kept, and diagnostics are capped at `maxDiagnostics`.
+- Memory grows with the number of keys (accounts, customers and suppliers, ...), not with the number of lines:
+  only open elements, key values, unresolved references (at most 100,000 per reference, XAF-R017 beyond that) and
+  the totals of transactions being read are kept, and the diagnostics list is capped at `maxDiagnostics`.
 - Text from the file is never interpreted: messages are filled without replacement patterns,
   and lookups use `Map`, not plain objects.
 - A stream you pass with `fromStream` is never destroyed; streams from a factory are closed when reading stops.
+
+## Diagnostics
+
+Every finding is a diagnostic with a stable code from `diagnostics.json` of auditfile-spec. The report lists at most
+`maxDiagnostics` (default 1000), followed by XAF-X900 when more were found. A full list makes room for errors by
+leaving out infos and warnings, and fatal diagnostics are always included. `isValid`, `hasErrors`, `hasFatal` and
+`count(severity)` count every diagnostic, also the ones left out; `isTruncated` says whether some were.
+
+| Layer | Codes this reader reports |
+| ----- | ------------------------- |
+| XML | X001–X004 (X004 also for a part of a split file in another encoding than the first part), X900 |
+| Version | V001–V006 |
+| Structure | S001–S005, S008; S006 in unverified mode (in verified mode the XSD reports a missing field as D001) |
+| XSD | D001, D002 |
+| Rules | R001–R004, R017 |
+| Dialect | C001–C003, when a dialect applies |
+| Views | Q001, Q002 |
+
+Defined in the spec but not checked yet: S007 and S009 (in verified mode the XSD reports too many occurrences and
+values outside a code list as D001), R005–R016 (ascending numbers, periods, eleven test, IBAN, personal data),
+X005 (the XML parser reports an invalid character as X001) and E001–E004 (envelopes).
 
 ## XSD validation
 
@@ -110,17 +149,18 @@ when present, its own otherwise), so it also runs in the browser through a bundl
 | ---- | -------- |
 | `src/` | The reader; `src/memory/` holds `MemorySink` (also exported as `@xml-auditfile/auditfile/memory`) |
 | `src/xsd/` | The streaming XSD validator |
-| `test/` | Tests, using the official XAF 3.2 test file from auditfile-spec |
-| `samples/read-to-memory.js` | Read a file and print tables, a row with definitions, views and diagnostics |
-| `samples/validate.js` | Validate a file; exit code 0 when valid |
+| `test/` | Tests, using the XAF 3.2 sample in `test/data/xaf-3.2-sample.xaf` (two intended findings: XAF-R001, XAF-R003) |
 | `spec.lock.json` | The pinned auditfile-spec release |
-| `tools/` | `fetch-spec.ps1` (fetches the pinned spec into `spec/`) and `embed-spec.mjs` |
+| `tools/` | `fetch-spec.ps1` (copies `generated/` of the pinned spec into `spec/generated/`) and `embed-spec.mjs` |
+
+Example programs live in [auditfile-js-samples](https://github.com/XML-auditfile/auditfile-js-samples).
 
 ## Definitions
 
 Everything in `generated/` of a pinned auditfile-spec release (XSD, manifests, definitions, dialects, registry,
 diagnostics, views) is embedded in the package as `src/generated/spec.js`. The spec is not committed:
-`spec.lock.json` pins a commit, `tools/fetch-spec.ps1` fetches exactly that commit into `spec/` (git-ignored), and
+`spec.lock.json` pins a commit, `tools/fetch-spec.ps1` copies only
+`generated/` of that commit into `spec/generated/` (git-ignored; a plain folder, not a git checkout), and
 `npm test` / `npm pack` embed it.
 
 ```
@@ -130,6 +170,14 @@ npm test
 ```
 
 To use a local spec checkout instead: `SPEC_ROOT=../auditfile-spec npm test`.
+
+## Workflows
+
+| Workflow | What it does |
+| -------- | ------------ |
+| `ci.yml` | Push to main and pull requests: fetch the pinned spec, install, test on Node 20, 22 and 24, pack (dry run), audit dependencies |
+| `release.yml` | Manual, with a version such as `1.0.1`. From `main` the version must be higher than every release; from `release/X.Y` (maintenance of an older line) it must be in line X.Y and higher than the latest release in that line. Then it fetches the pinned spec, tests, packs, creates the tag and GitHub release, and publishes to npm through Trusted Publishing when the `NPM_PUBLISH` variable is `true` (environment `npm`). Dist-tags: `latest` for the highest stable release, `next` for a pre-release, `release-X.Y` for maintenance |
+| `dependabot.yml` | Weekly updates of npm packages and GitHub Actions |
 
 ## License
 

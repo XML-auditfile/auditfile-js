@@ -1,15 +1,16 @@
 import { DiagnosticCollector, Location } from '../diagnostics/collector.js';
 import { AuditfileReport } from '../diagnostics/report.js';
 import { Sha256 } from '../internal/sha256.js';
-import { ConcatenatedStream, iterate } from '../internal/streams.js';
+import { ConcatenatedStream, iterate, SourceError } from '../internal/streams.js';
 import { END, START, TEXT, XmlEncodingError, XmlReader, XmlSyntaxError } from '../internal/xml-reader.js';
 import { AuditfileSchema } from '../schema/schema.js';
 import { ReferenceChecker } from '../validation/reference-checker.js';
-import { XafRules } from '../validation/xaf-rules.js';
+import { XAF, XafRules } from '../validation/xaf-rules.js';
 import { resolveVersion } from '../versioning/version-resolver.js';
 import { SchemaSet } from '../xsd/schema-set.js';
 import { XsdValidator } from '../xsd/validator.js';
-import { ReadMode } from './read-options.js';
+import { MappingPlan } from './mapping-plan.js';
+import { CANCELLATION_INTERVAL, ReadMode } from './read-options.js';
 import { RowLoader } from './row-loader.js';
 
 const PEEK_LIMIT = 1024 * 1024;
@@ -28,6 +29,7 @@ export class ReadSession {
     #rowCounts = new Map();
     #parts = [];
     #loaded = false;
+    #loadStarted = false;
     // A single-use source is opened once: the document used for version detection is kept for loading.
     #pending = null;
 
@@ -76,8 +78,14 @@ export class ReadSession {
         return !scanOnly;
     }
 
-    /** The load phase as a stream of rows. Diagnostics are collected along the way. */
+    /** The load phase as a stream of rows. Diagnostics are collected along the way. Can be iterated once. */
     async *load() {
+        // A second iteration would read the file again and add to the same counts and diagnostics.
+        if (this.#loadStarted) {
+            throw new Error('The rows of an audit file can be iterated only once; collect them in an array to use them twice.');
+        }
+
+        this.#loadStarted = true;
         if (this.schema === null) {
             return;
         }
@@ -95,8 +103,12 @@ export class ReadSession {
         const { stream, reader } = document;
         try {
             const validate = this.validateDuringLoad ? await this.#validator(stream) : null;
+            if (validate === undefined) {
+                return;
+            }
+
             const observers = [new ReferenceChecker(this.schema, this.diagnostics)];
-            if (this.resolution.version.type === 'xaf') {
+            if (this.resolution.version.type === XAF) {
                 observers.push(new XafRules(this.schema, this.diagnostics));
             }
 
@@ -121,11 +133,23 @@ export class ReadSession {
             this.#parts = stream.completed;
         }
 
+        // Without a scan phase a dialect recognized by the software description is only known now; the report names it.
+        const r = this.resolution;
+        if ((r.dialect?.name ?? null) !== this.schema.dialect) {
+            this.schema = AuditfileSchema.create(r.version, r.fileNamespace, r.source, r.dialect?.name ?? null,
+                this.schema.hasRowCounts ? this.#rowCountsFromSchema() : null);
+        }
+
         this.#loaded = true;
     }
 
+    /** True when the load phase has read the whole file. */
+    get loaded() {
+        return this.#loaded;
+    }
+
     createReport(loaded) {
-        return new AuditfileReport(this.schema, this.#parts, this.diagnostics.items,
+        return new AuditfileReport(this.schema, this.#parts, this.diagnostics.items, this.diagnostics.counts, this.diagnostics.isTruncated,
             this.#loaded ? this.#rowCounts : this.#rowCountsFromSchema(), loaded, now() - this.#started);
     }
 
@@ -150,33 +174,15 @@ export class ReadSession {
         const { reader } = document;
         try {
             const feed = validate ? await this.#validator(stream) : null;
-            const manifest = this.resolution.version.manifest;
-            const tablesByPath = new Map(manifest.tables.map((t) => [t.path, t.name]));
-            const counts = new Map(manifest.tables.map((t) => [t.name, 0]));
-            const paths = [];
+            if (feed === undefined) {
+                return;
+            }
 
+            let counts;
             try {
-                for (let event = await reader.next(); event !== null; event = reader.poll() ?? await reader.next()) {
-                    feed?.(event);
-                    if (event.kind !== START) {
-                        continue;
-                    }
-
-                    const depth = event.depth;
-                    if (depth >= this.#options.maxDepth) {
-                        this.diagnostics.add('XAF-X003', new Location(event.part, event.line, event.column, null), { max: this.#options.maxDepth });
-                        return;
-                    }
-
-                    const parent = depth === 0 ? null : paths[depth - 1];
-                    const path = event.ns === manifest.namespace && (depth === 0 || parent !== null)
-                        ? (depth === 0 ? event.local : `${parent}/${event.local}`)
-                        : null;
-                    paths[depth] = path;
-                    const table = path === null ? undefined : tablesByPath.get(path);
-                    if (table !== undefined) {
-                        counts.set(table, counts.get(table) + 1);
-                    }
+                counts = await this.#countRows(reader, feed);
+                if (counts === null) {
+                    return;
                 }
             } catch (error) {
                 if (this.#xmlError(error)) {
@@ -195,15 +201,78 @@ export class ReadSession {
         }
     }
 
-    /** Reports a well-formedness or encoding error; returns false for anything else. */
+    /**
+     * Walks the document (feeding the XSD validator, when validating) and counts the rows per table.
+     * Recognizes a dialect by the software description on the way. Returns null after XAF-X003.
+     */
+    async #countRows(reader, feed) {
+        const r = this.resolution;
+        const plan = new MappingPlan(AuditfileSchema.create(r.version, r.fileNamespace, r.source, null, null));
+        const softwareNode = plan.root.children.get(r.version.rootElement)?.children.get('header')?.children.get('softwareDesc');
+        const counts = new Map(r.version.manifest.tables.map((t) => [t.name, 0]));
+        const namespace = r.version.namespace;
+        const signal = this.#options.signal;
+        const nodes = [];
+        let software = null;
+        let softwareDepth = -1;
+        let events = 0;
+
+        for (let event = await reader.next(); event !== null; event = reader.poll() ?? await reader.next()) {
+            if (events++ % CANCELLATION_INTERVAL === 0) {
+                signal?.throwIfAborted();
+            }
+
+            feed?.(event);
+
+            // The dialect is recognized here already, so the schema handed to the sink names it.
+            if (software !== null) {
+                if (event.kind === TEXT && software.length <= this.#options.maxValueLength) {
+                    software += event.text;
+                } else if (event.kind === END && event.depth === softwareDepth) {
+                    r.useSoftware(software, this.#options.applyDialects);
+                    software = null;
+                }
+            }
+
+            if (event.kind !== START) {
+                continue;
+            }
+
+            const depth = event.depth;
+            if (depth >= this.#options.maxDepth) {
+                this.diagnostics.add('XAF-X003', new Location(event.part, event.line, event.column, null), { max: this.#options.maxDepth });
+                return null;
+            }
+
+            const parent = depth === 0 ? plan.root : nodes[depth - 1];
+            const node = parent != null && event.ns === namespace ? parent.children.get(event.local) ?? null : null;
+            nodes[depth] = node;
+            if (node?.table != null) {
+                const name = node.table.table.name;
+                counts.set(name, counts.get(name) + 1);
+            } else if (node !== null && node === softwareNode && r.dialect === null) {
+                software = '';
+                softwareDepth = depth;
+            }
+        }
+
+        return counts;
+    }
+
+    /** Reports a well-formedness, encoding or source error; returns false for anything else. */
     #xmlError(error) {
+        if (error instanceof SourceError) {
+            this.diagnostics.add('XAF-X002', Location.NONE, { part: error.part, detail: error.message });
+            return true;
+        }
+
         if (error instanceof XmlSyntaxError) {
             this.diagnostics.add('XAF-X001', new Location(error.part, error.line, error.column, null), { detail: error.message });
             return true;
         }
 
         if (error instanceof XmlEncodingError) {
-            this.diagnostics.add('XAF-X004', Location.NONE, { encoding: error.encoding });
+            this.diagnostics.add('XAF-X004', new Location(error.part, null, null, null), { encoding: error.encoding });
             return true;
         }
 
@@ -215,16 +284,17 @@ export class ReadSession {
      * Returns the reader positioned before the root element, or null when the file cannot be read.
      */
     async #open(stream) {
-        const reader = new XmlReader(stream);
+        const reader = new XmlReader(stream, { maxCharacters: this.#options.maxCharactersInDocument });
         let root = null;
         try {
             for (let event = await reader.next(); event !== null; event = await reader.next()) {
                 if (event.kind === START) {
-                    root = event;
+                    root = reader.rootOffset >= PEEK_LIMIT ? null : event;
                     break;
                 }
 
-                if (reader.position > PEEK_LIMIT) {
+                // Only while the root has not been parsed yet: a source may hand over the whole file at once.
+                if (reader.position > PEEK_LIMIT && reader.rootOffset === null) {
                     break;
                 }
             }
@@ -237,14 +307,10 @@ export class ReadSession {
                 }
             }
         } catch (error) {
+            // A source that cannot be read is a finding (X002); a wrong argument is the caller's error.
             if (!this.#xmlError(error)) {
-                // A source that cannot be read is a finding (X002); a wrong argument or a later failure is the caller's error.
-                if (this.resolution !== null || error instanceof TypeError) {
-                    await reader.close();
-                    throw error;
-                }
-
-                this.diagnostics.add('XAF-X002', Location.NONE, { part: this.#source.parts[0].name, detail: error?.message ?? String(error) });
+                await reader.close();
+                throw error;
             }
         }
 
@@ -285,26 +351,37 @@ export class ReadSession {
         return true;
     }
 
-    /** The XSD validator as an event consumer that reports XAF-D001. */
+    /**
+     * The XSD validator as an event consumer that reports XAF-D001.
+     * Returns undefined (after XAF-X002) when a custom XSD cannot be read or compiled.
+     */
     async #validator(stream) {
         const version = this.resolution.version;
         let set;
         if (this.#options.xsd === null) {
             set = version.createSchemaSet();
         } else {
-            const bytes = await readAll(this.#options.xsd());
-            if (Sha256.hex(bytes) !== version.manifest.xsdSha256) {
-                this.diagnostics.add('XAF-D002', Location.NONE, { version: version.key });
-            }
+            try {
+                const bytes = await readAll(this.#options.xsd());
+                if (Sha256.hex(bytes) !== version.manifest.xsdSha256) {
+                    this.diagnostics.add('XAF-D002', Location.NONE, { version: version.key });
+                }
 
-            const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-            set = SchemaSet.compile('custom.xsd', (name) => (name === 'custom.xsd' ? text : undefined));
+                const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+                set = SchemaSet.compile('custom.xsd', (name) => (name === 'custom.xsd' ? text : undefined));
+            } catch (error) {
+                this.diagnostics.add('XAF-X002', Location.NONE, { part: 'XSD', detail: error?.message ?? String(error) });
+                return undefined;
+            }
         }
 
+        // Keys and references are checked by the ReferenceChecker (XAF-R003, XAF-R004) from the manifest, which holds every
+        // constraint of the XSD. The XSD's own identity constraints use XPaths without a namespace prefix, so in a namespaced
+        // document they never match; evaluating them only costs time.
         let part = stream.part;
         const validator = new XsdValidator(set, (message, line, column) => {
             this.diagnostics.add('XAF-D001', new Location(part, line, column, null), { detail: message });
-        });
+        }, this.#options.maxValueLength, false);
 
         return (event) => {
             part = event.part;
