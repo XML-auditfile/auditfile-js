@@ -118,4 +118,5 @@ jobs:
         env:
           DIST_TAG: ${{ steps.version.outputs.dist-tag }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish artifacts/*.tgz --tag "$DIST_TAG" --access public --provenance
+        # "./": without it, npm reads "artifacts/<file>.tgz" as a GitHub repository (user/repo).
+        run: npm publish ./artifacts/*.tgz --tag "$DIST_TAG" --access public --provenance
