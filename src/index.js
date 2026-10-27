@@ -16,5 +16,6 @@ export { AuditfileRow } from './reading/row.js';
 export { AuditfileSource, PartInfo, SourcePart } from './reading/source.js';
 export { AuditfileSchema, SchemaColumn, SchemaTable, VersionSource } from './schema/schema.js';
 export { ImportContext, SinkCapabilities } from './sinks/sink.js';
+export { DialectRegistry, ViewRegistry } from './versioning/custom-definitions.js';
 export { AuditfileVersion } from './versioning/version.js';
 export { ViewResult } from './views/view-result.js';
