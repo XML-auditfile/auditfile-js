@@ -2,6 +2,7 @@ import { normalizeOptions, ReadProgress } from './reading/read-options.js';
 import { ReadSession } from './reading/read-session.js';
 import { AuditfileSource } from './reading/source.js';
 import { checkSink, ImportContext, NULL_SINK, SinkCapabilities } from './sinks/sink.js';
+import { DialectRegistry, ViewRegistry } from './versioning/custom-definitions.js';
 
 function checkSource(source) {
     if (!(source instanceof AuditfileSource)) {
@@ -18,6 +19,20 @@ function checkSource(source) {
  * const report = await Auditfile.read(AuditfileSource.fromFactory(() => fs.createReadStream('admin.xaf'), 'admin.xaf'), sink);
  */
 export class Auditfile {
+    /**
+     * Dialects added at runtime, next to the built-in ones: `Auditfile.dialects.add('xaf/3.2', json)`.
+     * Shared by every read in this process.
+     * @type {DialectRegistry}
+     */
+    static dialects = new DialectRegistry();
+
+    /**
+     * Views added at runtime, next to the built-in ones: `Auditfile.views.add(json)`, then `version.findView(name)`.
+     * Shared by every read in this process.
+     * @type {ViewRegistry}
+     */
+    static views = new ViewRegistry();
+
     /**
      * Reads an audit file into a sink. Verified mode (default) validates against the XSD first and loads only a valid file.
      * @param {AuditfileSource} source

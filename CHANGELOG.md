@@ -7,6 +7,9 @@ and the project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Custom dialects and views at runtime, in the format of auditfile-spec: `Auditfile.dialects.add(version, json)` and
+  `Auditfile.views.add(json)`, with `remove` and `clear` (`DialectRegistry`, `ViewRegistry`). They appear after the
+  built-in ones in `AuditfileVersion.dialects`, `views` and `findView`.
 - TypeScript declarations in the package (`types/`), generated from the JSDoc.
 - Release workflow: npm Trusted Publishing with provenance, dist-tags `latest`, `next` and `release-X.Y`.
 - Typed row accessors (`getString`, `getDecimal`, `getInteger`, `getDate`, `getDateTime`, `getTime`, `getBoolean`, `has`) that check the column type, also with a column looked up once.

@@ -61,6 +61,7 @@ Values are read in XSD notation only: a date-time such as `03/01/2017 10:00:00` 
 | `await Auditfile.scan(source, options)` | Version, XSD validation and row counts only |
 | `(await Auditfile.open(source, options)).readRows()` | Stream rows yourself (`for await`); the rows can be iterated once |
 | `AuditfileVersion.Financial.V3_2` | Manifest, XSD, definitions, dialects and views of a version |
+| `Auditfile.dialects.add(version, json)` / `Auditfile.views.add(json)` | Add your own dialects and views next to the built-in ones (see below) |
 | `schema.toJson()` / `AuditfileSchema.fromJson()` | Store and restore the schema of an import |
 
 Sources: the reader never opens files; you supply the streams. A stream is a Node `Readable`, a web
@@ -81,6 +82,38 @@ When a sink fails and its `abort` fails too, the read rejects with an `Aggregate
 
 A sink is any object with `begin(context)`, `write(table, rows)`, `complete(report)` and `abort(report)`;
 each may return a promise. Set `capabilities = SinkCapabilities.NeedsRowCounts` to get row counts before the first row.
+
+## Custom dialects and views
+
+Dialects and views come from auditfile-spec and are built into the package. You can add your own at runtime, in the same
+format as `dialects.json` and `views/<type>.json` of the spec, without a fork or a custom build. Pass JSON text or the
+parsed object; the reader opens no files, so read them yourself.
+
+```js
+import { readFileSync } from 'node:fs';
+import { Auditfile, AuditfileVersion } from '@xml-auditfile/auditfile';
+
+// { "formatVersion": 1, "dialects": [ { "name": "my-package", "match": { ... }, "corrections": [ ... ] } ] }
+Auditfile.dialects.add(AuditfileVersion.Financial.V3_2, readFileSync('dialects.json', 'utf8'));   // or 'xaf/3.2'
+
+// { "formatVersion": 1, "type": "xaf", "views": [ { "name": "lines_per_account", ... } ] }
+Auditfile.views.add(readFileSync('views.json', 'utf8'));
+
+const report = await Auditfile.read(source, sink);           // recognizes and applies the added dialect
+const result = sink.run(sink.schema.version.findView('lines_per_account'));
+```
+
+- Added definitions come after the built-in ones in `version.dialects` and `version.views`, so `findView`, version
+  resolution and dialect corrections use them like the built-in ones. A view is added for every version of its `type`;
+  whether it fits a version is decided when it runs (XAF-Q001), as for built-in views. `applyDialects: false` ignores
+  added dialects too.
+- A file is checked when it is added and refused as a whole when anything is wrong: invalid JSON (`SyntaxError`),
+  a `formatVersion` other than 1, an unknown audit file type or version, an unknown dialect action, view aggregate or
+  operator, a correction `code` that is not a dialect diagnostic (XAF-C001–C003), or a name the version or type already
+  has (`RangeError`). Built-in definitions cannot be replaced or removed.
+- `Auditfile.dialects.remove(version, name)` and `Auditfile.views.remove(type, name)` remove one added definition;
+  `clear()` removes all of them. The definitions are shared by every read in the process; a read that has started keeps
+  the dialects it found.
 
 ## Values
 

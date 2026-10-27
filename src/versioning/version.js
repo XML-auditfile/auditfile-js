@@ -5,6 +5,7 @@ import { exists, readBytes, readJson, readText } from '../definitions/resources.
 import { ViewDefinition } from '../definitions/view-definition.js';
 import { objects, string } from '../internal/json.js';
 import { Sha256 } from '../internal/sha256.js';
+import { customDialects, customViews } from './custom-definitions.js';
 import { SchemaSet } from '../xsd/schema-set.js';
 
 /** @type {AuditfileVersion[] | null} */
@@ -93,14 +94,19 @@ export class AuditfileVersion {
         return this.#definitions();
     }
 
-    /** @type {readonly Dialect[]} Known dialects of this version. */
+    /** @type {readonly Dialect[]} Known dialects of this version: the built-in ones, then those added with `Auditfile.dialects.add`. */
     get dialects() {
-        return this.#dialects();
+        const custom = customDialects(this.key);
+        return custom.length === 0 ? this.#dialects() : Object.freeze([...this.#dialects(), ...custom]);
     }
 
-    /** @type {readonly ViewDefinition[]} Views of this audit file type, e.g. the trial balance. Shared by all versions of the type. */
+    /**
+     * @type {readonly ViewDefinition[]} Views of this audit file type, e.g. the trial balance: the built-in ones, then
+     * those added with `Auditfile.views.add`. Shared by all versions of the type.
+     */
     get views() {
-        return this.#views();
+        const custom = customViews(this.type);
+        return custom.length === 0 ? this.#views() : Object.freeze([...this.#views(), ...custom]);
     }
 
     /**
