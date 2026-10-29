@@ -184,7 +184,7 @@ when present, its own otherwise), so it also runs in the browser through a bundl
 | `src/xsd/` | The streaming XSD validator |
 | `test/` | Tests, using the XAF 3.2 sample in `test/data/xaf-3.2-sample.xaf` (two intended findings: XAF-R001, XAF-R003) |
 | `spec.lock.json` | The pinned auditfile-spec release |
-| `tools/` | `fetch-spec.ps1` (copies `generated/` of the pinned spec into `spec/generated/`) and `embed-spec.mjs` |
+| `tools/` | `fetch-spec.ps1` (copies `generated/` of the pinned spec into `spec/generated/`) , `embed-spec.mjs` and `generate-constants.mjs` (version constants from the registry) |
 
 Example programs live in [auditfile-js-samples](https://github.com/XML-auditfile/auditfile-js-samples).
 
@@ -203,6 +203,10 @@ npm test
 ```
 
 To use a local spec checkout instead: `SPEC_ROOT=../auditfile-spec npm test`.
+
+The version constants (`AuditfileVersion.Financial.V3_2`, ...) are written from the registry of the pinned spec by
+`node tools/generate-constants.mjs`; run it after `spec.lock.json` changes. CI checks that they match.
+`spec-update.yml` does both when auditfile-spec has a new release, and opens a pull request.
 
 ## Workflows
 

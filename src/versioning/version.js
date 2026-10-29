@@ -180,44 +180,65 @@ function constant(key) {
 
 // The version constants. A test checks that every registry entry has a constant here and vice versa.
 // Names follow the registry: version with underscores, e.g. V3_2 for 3.2.
+// Written by tools/generate-constants.mjs from the registry; do not edit between the markers.
 
+// <generated: constants>
 /** Auditfile Financieel (XAF). */
 AuditfileVersion.Financial = Object.freeze(Object.defineProperties({}, {
-    /** XAF 3.2 (2014, supplemented in 2017). */
+    /** XAF 3.1. */
+    V3_1: constant('xaf/3.1'),
+    /** XAF 3.2 (published 2017-09-01). */
     V3_2: constant('xaf/3.2'),
+    /** XAF 3.2.1. */
+    V3_2_1: constant('xaf/3.2.1'),
     /** XAF 4.0.3. */
     V4_0_3: constant('xaf/4.0.3'),
 }));
 
 /** Auditfile Afrekensystemen (XAA). */
 AuditfileVersion.CashRegister = Object.freeze(Object.defineProperties({}, {
+    /** XAA 3.2. */
     V3_2: constant('xaa/3.2'),
 }));
 
 /** Auditfile Boordcomputer Taxi (XAB). */
 AuditfileVersion.TaxiOnboardComputer = Object.freeze(Object.defineProperties({}, {
+    /** XAB 1.0. */
     V1_0: constant('xab/1.0'),
 }));
 
 /** Auditfile Ritregistratie (XAR). */
 AuditfileVersion.TripRegistration = Object.freeze(Object.defineProperties({}, {
+    /** XAR 1.2. */
     V1_2: constant('xar/1.2'),
+    /** XAR 2.3.6.1. */
     V2_3_6_1: constant('xar/2.3.6.1'),
 }));
 
 /** Auditfile Salaris (XAS). */
 AuditfileVersion.Payroll = Object.freeze(Object.defineProperties({}, {
+    /** XAS 2018.1.0. */
     V2018_1_0: constant('xas/2018.1.0'),
+    /** XAS 2019.1.0. */
     V2019_1_0: constant('xas/2019.1.0'),
+    /** XAS 2020.1.0. */
     V2020_1_0: constant('xas/2020.1.0'),
+    /** XAS 2021.1.1. */
     V2021_1_1: constant('xas/2021.1.1'),
+    /** XAS 2022.1.1. */
     V2022_1_1: constant('xas/2022.1.1'),
+    /** XAS 2023.1.0. */
     V2023_1_0: constant('xas/2023.1.0'),
+    /** XAS 2024.1.0. */
     V2024_1_0: constant('xas/2024.1.0'),
+    /** XAS 2025.1.0. */
     V2025_1_0: constant('xas/2025.1.0'),
+    /** XAS 2026.1.0. */
     V2026_1_0: constant('xas/2026.1.0'),
+    /** XAS 2027.1.0. */
     V2027_1_0: constant('xas/2027.1.0'),
 }));
 
 /** The groups of version constants, for the test that compares them with the registry. */
 export const VERSION_GROUPS = Object.freeze(['Financial', 'CashRegister', 'TaxiOnboardComputer', 'TripRegistration', 'Payroll']);
+// </generated: constants>
