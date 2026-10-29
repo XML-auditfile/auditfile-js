@@ -34,6 +34,10 @@ jobs:
         shell: pwsh
         run: ./tools/fetch-spec.ps1
 
+      # The constants are written from the registry (tools/generate-constants.mjs); they must match the locked spec.
+      - name: Check the version constants
+        run: node tools/generate-constants.mjs --check
+
       - name: Install
         run: npm ci
 
